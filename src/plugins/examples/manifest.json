@@ -1,0 +1,26 @@
+{
+  "id": "local.example-plugin",
+  "name": "CardForge Example Plugin",
+  "version": "0.1.0",
+  "main": "example-plugin.js",
+  "enabled": false,
+  "trusted": false,
+  "permissions": ["project.read", "character.read", "ui.panel"],
+  "contributes": {
+    "panels": [
+      {
+        "id": "example-panel",
+        "title": "Example Panel",
+        "location": "advanced"
+      }
+    ],
+    "commands": [
+      {
+        "id": "example.inspect",
+        "title": "Inspect Current Project",
+        "category": "Example"
+      }
+    ]
+  },
+  "notes": "示例插件不会被当前版本执行，仅用于说明 manifest 结构。"
+}
