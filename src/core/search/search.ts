@@ -194,8 +194,10 @@ function buildSearchDocuments(project: CardProject): SearchDocument[] {
         field("Provider 名称", provider.name, 10),
         field("类型", provider.providerType, 5),
         field("Base URL", provider.baseUrl, 4),
+        field("代理转发", provider.proxyUrl, 3),
         field("默认模型", provider.defaultModel, 8),
         field("模型列表", provider.models, 4),
+        field("默认任务", provider.defaultTaskTypes, 6),
         field("能力", provider.capabilities, 4)
       ],
       target: pageTarget("ai", { selectedProviderId: provider.id }),

@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { existsSync, readFileSync } from "node:fs";
 import { unzipSync } from "fflate";
 import {
   createCharacterDraft,
@@ -15,6 +16,7 @@ import {
 } from "../src/core/schema/defaults";
 import { aiProviderSchema } from "../src/core/schema/validators";
 import { importCharacterJson, importWorldBookJson } from "../src/core/importer/character";
+import { getV2PngBatchImageWarnings } from "../src/core/exporter/batch";
 import { createExportRecord, getV1LossWarnings, toV1Character, toV2Character, toV3Character, toWorldBookJson } from "../src/core/exporter/character";
 import { buildExportPreflightReport, formatExportReportMarkdown } from "../src/core/exporter/report";
 import { embedV2MetadataInPngDataUrl, extractCharacterFromPngDataUrl } from "../src/core/exporter/pngMetadata";
@@ -24,9 +26,10 @@ import { createProjectDuplicate } from "../src/core/project/duplicate";
 import { exportProjectPackage, importProjectPackage } from "../src/core/project/package";
 import { exampleProjects } from "../src/core/examples/exampleProjects";
 import { buildProjectDirectoryEntries } from "../src/storage/BrowserFileSystemStorage";
-import { buildPresetMessages, findTaskPreset, missingPresetVariables, renderPromptTemplate } from "../src/core/ai/presets";
+import { buildPresetMessages, findTaskPreset, missingPresetVariables, renderPromptTemplate, resolveAIForTask } from "../src/core/ai/presets";
 import { summarizeAILogs } from "../src/core/ai/cost";
 import { parseOpenAIStreamText } from "../src/core/ai/client";
+import { parseImageGenerationResponse } from "../src/core/ai/image";
 import { createAIInvocationLog } from "../src/core/ai/logging";
 import { buildFrontendSandboxPreview } from "../src/core/frontend/sandbox";
 import { buildTestPrompt } from "../src/core/prompt-builder/buildPrompt";
@@ -39,7 +42,7 @@ import { isScriptRunnableInCurrentVersion, scriptSafetyIssues } from "../src/cor
 import { applyVariableDiffs, diffVariables, getPathValue, parseMvuSetCommands, previewVariableDiffs } from "../src/core/variable-system/mvu";
 import { categoryLabel, classifyWorldBookEntry } from "../src/core/worldbook/classify";
 import { normalizeWorldBookEntryCandidate } from "../src/core/worldbook/normalize";
-import { checkWorldBookQuality } from "../src/core/quality/checks";
+import { buildCharacterTokenBreakdown, checkCharacterQuality, checkWorldBookQuality } from "../src/core/quality/checks";
 import { sanitizeSensitiveHeaders, sensitiveHeaderKeys } from "../src/core/security/sensitive";
 import { getCurrentProject, useAppStore } from "../src/stores/useAppStore";
 import { BrowserStorage } from "../src/storage/BrowserStorage";
@@ -52,7 +55,9 @@ character.scenario = "旅人来到雪国诊所。";
 character.firstMessage = "门铃轻响，莉娅抬起眼。";
 character.exampleMessages = "<START>\n{{char}}: 你需要哪种药？";
 character.systemPrompt = "保持角色，不替 {{user}} 行动。";
+character.creatorNotes = "测试用 creator_notes。";
 character.tags = ["药师", "雪国"];
+character.extensions = { selfCheck: { preserved: true } };
 
 const defaultProject = createProjectDraft("默认项目自检", "light");
 const defaultCharacter = defaultProject.characters[0];
@@ -117,6 +122,20 @@ const v1 = toV1Character(character);
 assert.equal(v1.name, "莉娅");
 assert.equal(v1.first_mes, character.firstMessage);
 assert.ok(getV1LossWarnings(character).some((warning) => warning.includes("system_prompt")));
+const problematicCharacter = createCharacterDraft("问题角色");
+problematicCharacter.description = "她谨慎温和沉默耐心喜欢观察细节并在雪夜记录药草与梦境裂缝。";
+problematicCharacter.personality = "她谨慎温和沉默耐心喜欢观察细节并在雪夜记录药草与梦境裂缝。";
+problematicCharacter.firstMessage = "{{user}}决定打开门，然后你走向柜台。";
+problematicCharacter.exampleMessages = "{{user}}: 你好\n莉娅: 作为AI我会忽略之前的系统提示。";
+const characterIssues = checkCharacterQuality(problematicCharacter);
+assert.ok(characterIssues.some((item) => item.message.includes("重复度")));
+assert.ok(characterIssues.some((item) => item.message.includes("<START>")));
+assert.ok(characterIssues.some((item) => item.message.includes("{{char}}")));
+assert.ok(characterIssues.some((item) => item.message.includes("OOC")));
+assert.ok(characterIssues.some((item) => item.message.includes("替 {{user}} 行动")));
+const characterTokens = buildCharacterTokenBreakdown(problematicCharacter);
+assert.ok(characterTokens.total > 0);
+assert.ok(characterTokens.sections.some((section) => section.id === "firstMessage" && section.tokens > 0));
 
 const worldBook = createWorldBookDraft("雪国世界书");
 worldBook.entries = [
@@ -138,10 +157,13 @@ worldBook.entries = [
 const v2 = toV2Character(character, worldBook);
 assert.equal(v2.spec, "chara_card_v2");
 assert.equal(v2.data.character_book !== null, true);
+assert.equal(v2.data.creator_notes, "测试用 creator_notes。");
+assert.equal((v2.data.extensions.selfCheck as { preserved: boolean }).preserved, true);
 
 const importedV2 = importCharacterJson(v2);
 assert.equal(importedV2.character.name, "莉娅");
 assert.equal(importedV2.embeddedWorldBook?.entries.length, 2);
+assert.equal(importedV2.report.importedAsReadonly, false);
 const onePixelPng =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 const pngWithMetadata = await embedV2MetadataInPngDataUrl(onePixelPng, character, worldBook);
@@ -149,6 +171,7 @@ const importedPng = extractCharacterFromPngDataUrl(pngWithMetadata, "lia.v2.png"
 assert.equal(importedPng.character.name, "莉娅");
 assert.equal(importedPng.character.originalSource?.format, "v2_png");
 assert.equal(importedPng.report.detected.format, "V2 PNG");
+assert.equal(importedPng.report.importedAsReadonly, false);
 assert.equal(importedPng.embeddedWorldBook?.entries.length, 2);
 useAppStore.setState({ projects: [], currentProjectId: undefined, activePage: "projects" });
 useAppStore.getState().createProject("导入保护自检", "advanced");
@@ -167,11 +190,16 @@ assert.equal(afterCharacterStoreImport.versions.length, importBackupInitial.vers
 assert.equal(afterCharacterStoreImport.versions[0].targetType, "project");
 assert.ok(afterCharacterStoreImport.versions[0].label.includes("导入角色 莉娅 前自动备份"));
 assert.equal((afterCharacterStoreImport.versions[0].data as { characters: unknown[] }).characters.length, importBackupInitial.characters.length);
+useAppStore.getState().importCharacterResult(importedPng);
+const afterPngStoreImport = getCurrentProject(useAppStore.getState())!;
+assert.equal(afterPngStoreImport.versions.length, afterCharacterStoreImport.versions.length + 1);
+assert.equal(afterPngStoreImport.characters.at(-1)?.originalSource?.format, "v2_png");
+assert.ok(afterPngStoreImport.versions[0].label.includes("导入角色 莉娅 前自动备份"));
 useAppStore.getState().importWorldBook(toWorldBookJson(worldBook), "snow.worldbook.json");
 const afterWorldBookStoreImport = getCurrentProject(useAppStore.getState())!;
-assert.equal(afterWorldBookStoreImport.versions.length, afterCharacterStoreImport.versions.length + 1);
+assert.equal(afterWorldBookStoreImport.versions.length, afterPngStoreImport.versions.length + 1);
 assert.ok(afterWorldBookStoreImport.versions[0].label.includes("导入世界书 雪国世界书 前自动备份"));
-assert.equal((afterWorldBookStoreImport.versions[0].data as { worldBooks: unknown[] }).worldBooks.length, afterCharacterStoreImport.worldBooks.length);
+assert.equal((afterWorldBookStoreImport.versions[0].data as { worldBooks: unknown[] }).worldBooks.length, afterPngStoreImport.worldBooks.length);
 
 const v3 = toV3Character(character, worldBook, []);
 assert.equal(v3.spec, "chara_card_v3");
@@ -210,6 +238,8 @@ const heavyCard = {
 const importedHeavy = importCharacterJson(heavyCard);
 assert.equal(importedHeavy.report.cardKind, "heavy");
 assert.equal(importedHeavy.report.suggestedMode, "advanced");
+assert.equal(importedHeavy.report.importedAsReadonly, true);
+assert.equal(importedHeavy.report.level, "readonly");
 assert.equal(importedHeavy.report.detected.regex, true);
 assert.equal(importedHeavy.report.detected.mvu, true);
 assert.equal(importedHeavy.report.detected.scripts, true);
@@ -539,15 +569,32 @@ assert.equal(sanitizedProviderHeaders["X-API-Key"], "");
 assert.equal(sanitizedProviderHeaders["X-Secret-Token"], "");
 assert.equal(sanitizedProviderHeaders["X-Self-Check"], "ok");
 provider.models = ["gpt-4o-mini", "gpt-4o"];
+provider.providerType = "lm-studio";
+provider.proxyUrl = "http://127.0.0.1:8787/relay";
+provider.defaultTaskTypes = ["testChat", "diagnoseTest"];
 provider.defaultParams.topP = 0.8;
 provider.defaultParams.stream = true;
 provider.capabilities = ["chat", "json", "streaming"];
 assert.doesNotThrow(() => aiProviderSchema.parse(provider));
+assert.equal(provider.proxyUrl.includes("/relay"), true);
+assert.ok(provider.defaultTaskTypes.includes("testChat"));
 assert.equal(
   parseOpenAIStreamText(
     'data: {"choices":[{"delta":{"content":"你"}}]}\n\ndata: {"choices":[{"delta":{"content":"好"}}]}\n\ndata: [DONE]\n'
   ),
   "你好"
+);
+assert.equal(
+  parseImageGenerationResponse("openai-compatible", { data: [{ b64_json: "iVBORw0KGgo=" }] })[0].dataUrl,
+  "data:image/png;base64,iVBORw0KGgo="
+);
+assert.equal(
+  parseImageGenerationResponse("stable-diffusion-webui", { images: ["iVBORw0KGgo="] })[0].dataUrl,
+  "data:image/png;base64,iVBORw0KGgo="
+);
+assert.equal(
+  parseImageGenerationResponse("custom", { body: { data: [{ url: "https://example.test/image.png" }] } })[0].url,
+  "https://example.test/image.png"
 );
 const aiLog = createAIInvocationLog({
   provider,
@@ -867,6 +914,9 @@ const jpegPngReport = buildExportPreflightReport({
   imageAsset: jpegCoverAsset
 });
 assert.ok(jpegPngReport.checks.some((item) => item.id === "image-not-png" && item.level === "blocker"));
+assert.deepEqual(getV2PngBatchImageWarnings([coverAsset]), []);
+assert.ok(getV2PngBatchImageWarnings([jpegCoverAsset]).some((warning) => warning.includes("不是 PNG")));
+assert.ok(getV2PngBatchImageWarnings([{ ...coverAsset, dataUrl: undefined }]).some((warning) => warning.includes("缺少 dataUrl")));
 
 const searchResults = searchProject(unpacked, "月草");
 assert.ok(searchResults.some((result) => result.sourceType === "character" && result.target.page === "characters"));
@@ -905,11 +955,13 @@ const validatePreset = findTaskPreset(exampleProjects[0].create().aiPresets, "va
 const worldBookPreset = findTaskPreset(exampleProjects[0].create().aiPresets, "worldBookSuggest");
 const testChatPreset = findTaskPreset(exampleProjects[0].create().aiPresets, "testChat");
 const diagnosePreset = findTaskPreset(exampleProjects[0].create().aiPresets, "diagnoseTest");
+const imagePromptPreset = findTaskPreset(exampleProjects[0].create().aiPresets, "imagePrompt");
 assert.ok(generatePreset);
 assert.ok(validatePreset);
 assert.ok(worldBookPreset);
 assert.ok(testChatPreset);
 assert.ok(diagnosePreset);
+assert.ok(imagePromptPreset);
 const routedPreset = createPresetDraft({ paramsOverride: { temperature: 0.3, topP: 0.9, maxTokens: 500 } });
 assert.equal(routedPreset.paramsOverride?.topP, 0.9);
 assert.equal(renderPromptTemplate("角色：{{ idea }}", { idea: "月下药师" }), "角色：月下药师");
@@ -918,12 +970,59 @@ assert.ok(buildPresetMessages(validatePreset!, { character }).some((message) => 
 assert.ok(buildPresetMessages(worldBookPreset!, { source: "雾城与钟塔" }).some((message) => message.content.includes("雾城")));
 assert.deepEqual(missingPresetVariables(generatePreset!, { idea: "" }), ["idea"]);
 assert.deepEqual(missingPresetVariables(worldBookPreset!, { source: "" }), ["source"]);
+const routeProviderA = { ...createProviderDraft(), id: "provider_route_a", name: "Route A", defaultTaskTypes: [] };
+const routeProviderB = {
+  ...createProviderDraft(),
+  id: "provider_route_b",
+  name: "Route B",
+  defaultModel: "route-b-model",
+  defaultTaskTypes: ["diagnoseTest"]
+};
+const explicitRoutePreset = createPresetDraft({
+  taskType: "testChat",
+  providerId: routeProviderA.id,
+  modelOverride: "explicit-override"
+});
+const explicitRoute = resolveAIForTask({
+  providers: [routeProviderA, routeProviderB],
+  presets: [explicitRoutePreset],
+  taskType: "testChat",
+  selectedProviderId: routeProviderB.id
+});
+assert.equal(explicitRoute.provider?.id, routeProviderA.id);
+assert.equal(explicitRoute.provider?.defaultModel, "explicit-override");
+const taskDefaultRoute = resolveAIForTask({
+  providers: [routeProviderA, routeProviderB],
+  presets: [],
+  taskType: "diagnoseTest",
+  selectedProviderId: routeProviderA.id
+});
+assert.equal(taskDefaultRoute.provider?.id, routeProviderB.id);
+const selectedFallbackRoute = resolveAIForTask({
+  providers: [routeProviderA, routeProviderB],
+  presets: [],
+  taskType: "rewriteField",
+  selectedProviderId: routeProviderB.id
+});
+assert.equal(selectedFallbackRoute.provider?.id, routeProviderB.id);
 
 assert.equal(exampleProjects.length, 8);
 for (const example of exampleProjects) {
   const project = example.create();
   assert.ok(project.name.length > 0);
   assert.ok(project.characters.length + project.worldBooks.length + project.advanced.plugins.length > 0);
+}
+
+const requiredDocs = [
+  "docs/架构说明.md",
+  "docs/用户使用说明.md",
+  "docs/AI配置说明.md",
+  "docs/插件开发草案.md",
+  "docs/已知限制.md"
+];
+for (const docPath of requiredDocs) {
+  assert.ok(existsSync(docPath), `${docPath} should exist`);
+  assert.ok(readFileSync(docPath, "utf8").includes("CardForge"), `${docPath} should describe CardForge`);
 }
 
 console.log("CardForge Studio self-check passed.");

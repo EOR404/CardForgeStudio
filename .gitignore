@@ -5,3 +5,10 @@ dist
 *.log
 *.tsbuildinfo
 coverage
+
+# AI instruction / requirement documents (not part of the project)
+项目要求.md
+项目要求_CardForgeStudio.md
+goal.md
+goal_CardForgeStudio.md
+*.opencode

@@ -2,9 +2,9 @@ import { Bot, Copy, ExternalLink, Flag, GitCompare, ListChecks, Play, Save, Stet
 import { useMemo, useState } from "react";
 import { maybeAIInvocationLog, runLoggedCompletion } from "../core/ai/logging";
 import { diagnoseTestWithAI } from "../core/ai/operations";
-import { buildPresetMessages, findTaskPreset } from "../core/ai/presets";
+import { buildPresetMessages, resolveAIForTask } from "../core/ai/presets";
 import { buildTestPrompt } from "../core/prompt-builder/buildPrompt";
-import type { AIProviderConfig, AIPreset, ChatMessage, PromptChainSection, QualityIssue, TestSessionStatus } from "../core/schema/types";
+import type { ChatMessage, PromptChainSection, QualityIssue, TestSessionStatus } from "../core/schema/types";
 import { checkCharacterQuality } from "../core/quality/checks";
 import { buildABComparisonReport } from "../core/tester/ab";
 import { builtInTestCases, evaluateBuiltInTestCase, renderBuiltInTestCasePrompt } from "../core/tester/cases";
@@ -279,14 +279,13 @@ export function TestSandboxPage() {
     setSelectedCaseId(FREEFORM_TEST_CASE_ID);
   }
 
-  function resolveTaskAI(taskType: string): { provider?: AIProviderConfig; preset?: AIPreset } {
-    const preset = findTaskPreset(activeProject.aiPresets, taskType);
-    const provider =
-      activeProject.aiProviders.find((item) => item.id === preset?.providerId) ??
-      activeProject.aiProviders.find((item) => item.id === state.selectedProviderId) ??
-      activeProject.aiProviders[0];
-    if (!provider) return { preset };
-    return { preset, provider: preset?.modelOverride ? { ...provider, defaultModel: preset.modelOverride } : provider };
+  function resolveTaskAI(taskType: string) {
+    return resolveAIForTask({
+      providers: activeProject.aiProviders,
+      presets: activeProject.aiPresets,
+      taskType,
+      selectedProviderId: state.selectedProviderId
+    });
   }
 
   const provider = resolveTaskAI("testChat").provider ?? activeProject.aiProviders.find((item) => item.id === state.selectedProviderId);

@@ -1,5 +1,9 @@
-import { Image, Link2, Plus, Trash2 } from "lucide-react";
+import { Image, Link2, Plus, Sparkles, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { maybeAIInvocationLog } from "../core/ai/logging";
+import { generateImagePromptWithAI, generateImagesWithAI } from "../core/ai/operations";
+import { resolveAIForTask } from "../core/ai/presets";
+import type { GeneratedImage } from "../core/ai/image";
 import type { Asset } from "../core/schema/types";
 import { getCurrentProject, useAppStore } from "../stores/useAppStore";
 import { readFileAsDataUrl } from "../utils/file";
@@ -30,14 +34,26 @@ export function AssetsPage() {
   const project = getCurrentProject(state);
   const [search, setSearch] = useState("");
   const [purposeFilter, setPurposeFilter] = useState("");
+  const [imagePurpose, setImagePurpose] = useState<NonNullable<Asset["purpose"]>>("avatar");
+  const [imageStyle, setImageStyle] = useState("anime character portrait, clean lighting, high detail");
+  const [positivePrompt, setPositivePrompt] = useState("");
+  const [negativePrompt, setNegativePrompt] = useState("low quality, blurry, extra fingers, watermark, text");
+  const [imageWidth, setImageWidth] = useState(768);
+  const [imageHeight, setImageHeight] = useState(768);
+  const [imageSteps, setImageSteps] = useState(24);
+  const [imageCount, setImageCount] = useState(1);
+  const [imageBusy, setImageBusy] = useState("");
+  const [imageStatus, setImageStatus] = useState("");
+  const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([]);
   if (!project) return null;
-  const selectedAsset = project.assets.find((asset) => asset.id === state.selectedAssetId) ?? project.assets[0];
-  const selectedCharacter = project.characters.find((character) => character.id === state.selectedCharacterId) ?? project.characters[0];
-  const selectedWorldBook = project.worldBooks.find((book) => book.id === state.selectedWorldBookId) ?? project.worldBooks[0];
-  const assets = project.assets.filter((asset) => {
+  const activeProject = project;
+  const selectedAsset = activeProject.assets.find((asset) => asset.id === state.selectedAssetId) ?? activeProject.assets[0];
+  const selectedCharacter = activeProject.characters.find((character) => character.id === state.selectedCharacterId) ?? activeProject.characters[0];
+  const selectedWorldBook = activeProject.worldBooks.find((book) => book.id === state.selectedWorldBookId) ?? activeProject.worldBooks[0];
+  const assets = activeProject.assets.filter((asset) => {
     const q = search.toLowerCase();
-    const characterNames = asset.linkedCharacterIds.map((id) => project.characters.find((character) => character.id === id)?.name ?? id);
-    const worldBookNames = asset.linkedWorldBookIds.map((id) => project.worldBooks.find((book) => book.id === id)?.name ?? id);
+    const characterNames = asset.linkedCharacterIds.map((id) => activeProject.characters.find((character) => character.id === id)?.name ?? id);
+    const worldBookNames = asset.linkedWorldBookIds.map((id) => activeProject.worldBooks.find((book) => book.id === id)?.name ?? id);
     const haystack = [
       asset.name,
       asset.type,
@@ -75,6 +91,98 @@ export function AssetsPage() {
     }
   }
 
+  function resolveTaskAI(taskType: string) {
+    return resolveAIForTask({
+      providers: activeProject.aiProviders,
+      presets: activeProject.aiPresets,
+      taskType,
+      selectedProviderId: state.selectedProviderId
+    });
+  }
+
+  async function generateImagePrompt() {
+    if (!selectedCharacter) return alert("请先选择一个角色。");
+    const { provider, preset } = resolveTaskAI("imagePrompt");
+    if (!provider) return alert("请先在 AI 设置页添加可用于 imagePrompt 的 Provider。");
+    setImageBusy("prompt");
+    setImageStatus("正在生成图片提示词...");
+    try {
+      const result = await generateImagePromptWithAI(
+        provider,
+        {
+          character: selectedCharacter,
+          purpose: purposeLabel(imagePurpose),
+          style: imageStyle
+        },
+        preset
+      );
+      if (result.log) state.addAIInvocationLog(result.log);
+      setPositivePrompt(result.parsed?.positivePrompt ?? result.raw.trim());
+      setNegativePrompt(result.parsed?.negativePrompt ?? negativePrompt);
+      setImageStatus(result.error ? `提示词已生成，但输出不是标准 JSON：${result.error}` : "提示词已生成，可编辑后继续生成图片。");
+    } catch (error) {
+      recordAIError(error);
+      setImageStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setImageBusy("");
+    }
+  }
+
+  async function generateImages() {
+    const { provider } = resolveTaskAI("imageGeneration");
+    if (!provider) return alert("请先在 AI 设置页添加可用于 imageGeneration 的图片 Provider。");
+    if (!positivePrompt.trim()) return alert("请先填写 positive prompt。");
+    setImageBusy("image");
+    setImageStatus("正在生成图片...");
+    setGeneratedImages([]);
+    try {
+      const result = await generateImagesWithAI(provider, {
+        prompt: positivePrompt,
+        negativePrompt,
+        width: imageWidth,
+        height: imageHeight,
+        steps: imageSteps,
+        count: imageCount
+      });
+      if (result.log) state.addAIInvocationLog(result.log);
+      setGeneratedImages(result.parsed ?? []);
+      setImageStatus(`生成完成：${result.parsed?.length ?? 0} 张候选图。点击保存后才会写入资源库。`);
+    } catch (error) {
+      recordAIError(error);
+      setImageStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setImageBusy("");
+    }
+  }
+
+  function saveGeneratedImage(image: GeneratedImage, index: number) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const name = `${selectedCharacter?.name || "cardforge"}-${imagePurpose}-${timestamp}-${index + 1}.png`;
+    state.addAsset({
+      name,
+      type: "image",
+      purpose: imagePurpose,
+      source: "generated",
+      mimeType: dataUrlMimeType(image.dataUrl) ?? "image/png",
+      dataUrl: image.dataUrl,
+      path: image.url,
+      thumbnailUrl: image.dataUrl ?? image.url,
+      tags: [
+        "AI生成",
+        purposeLabel(imagePurpose),
+        ...(selectedCharacter ? [selectedCharacter.name] : [])
+      ],
+      linkedCharacterIds: selectedCharacter ? [selectedCharacter.id] : [],
+      linkedWorldBookIds: [],
+      notes: [
+        `positive: ${positivePrompt}`,
+        negativePrompt ? `negative: ${negativePrompt}` : "",
+        image.revisedPrompt ? `revised: ${image.revisedPrompt}` : ""
+      ].filter(Boolean).join("\n")
+    });
+    setImageStatus(`已保存候选图：${name}`);
+  }
+
   function updateSelectedAsset(patch: Partial<Asset>) {
     if (!selectedAsset) return;
     state.updateAsset(selectedAsset.id, patch);
@@ -106,6 +214,11 @@ export function AssetsPage() {
     state.updateAsset(selectedAsset.id, {
       linkedWorldBookIds: selectedAsset.linkedWorldBookIds.filter((id) => id !== worldBookId)
     });
+  }
+
+  function recordAIError(error: unknown) {
+    const log = maybeAIInvocationLog(error);
+    if (log) state.addAIInvocationLog(log);
   }
 
   const usage = selectedAsset ? getAssetUsage(project, selectedAsset) : [];
@@ -158,6 +271,98 @@ export function AssetsPage() {
           <div className="callout" style={{ marginTop: 12 }}>
             可直接拖拽图片、JSON、Markdown、脚本或前端文件到资源库。图片可标记为头像、导出封面、背景、表情差分等用途。
           </div>
+          <div className="panel-title" style={{ marginTop: 16 }}>
+            <Sparkles size={18} />
+            <span>AI 图片生成</span>
+          </div>
+          <div className="form-grid">
+            <div className="form-row">
+              <label>
+                当前角色
+                <select value={selectedCharacter?.id ?? ""} onChange={(event) => useAppStore.setState({ selectedCharacterId: event.target.value })}>
+                  {project.characters.map((character) => (
+                    <option key={character.id} value={character.id}>
+                      {character.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                图片用途
+                <select value={imagePurpose} onChange={(event) => setImagePurpose(event.target.value as NonNullable<Asset["purpose"]>)}>
+                  {ASSET_PURPOSES.filter((purpose) => purpose.value !== "other").map((purpose) => (
+                    <option key={purpose.value} value={purpose.value}>
+                      {purpose.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label>
+              风格
+              <input value={imageStyle} onChange={(event) => setImageStyle(event.target.value)} />
+            </label>
+            <label>
+              positive prompt
+              <textarea value={positivePrompt} onChange={(event) => setPositivePrompt(event.target.value)} />
+            </label>
+            <label>
+              negative prompt
+              <textarea value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} />
+            </label>
+            <div className="grid-4">
+              <label>
+                width
+                <input type="number" value={imageWidth} onChange={(event) => setImageWidth(Number(event.target.value))} />
+              </label>
+              <label>
+                height
+                <input type="number" value={imageHeight} onChange={(event) => setImageHeight(Number(event.target.value))} />
+              </label>
+              <label>
+                steps
+                <input type="number" value={imageSteps} onChange={(event) => setImageSteps(Number(event.target.value))} />
+              </label>
+              <label>
+                count
+                <input type="number" min="1" max="4" value={imageCount} onChange={(event) => setImageCount(Number(event.target.value))} />
+              </label>
+            </div>
+            <div className="toolbar">
+              <button className="secondary-button" onClick={generateImagePrompt} disabled={Boolean(imageBusy)}>
+                <Sparkles size={16} /> 生成提示词
+              </button>
+              <button className="primary-button" onClick={generateImages} disabled={Boolean(imageBusy)}>
+                <Image size={16} /> 生成图片
+              </button>
+              {generatedImages.length > 0 && (
+                <button className="ghost-button" onClick={() => setGeneratedImages([])}>
+                  清空候选
+                </button>
+              )}
+            </div>
+            {imageStatus && <div className="callout"><pre>{imageStatus}</pre></div>}
+            {generatedImages.length > 0 && (
+              <div className="asset-grid">
+                {generatedImages.map((image, index) => (
+                  <div className="asset-tile" key={`${image.url ?? "data"}-${index}`}>
+                    {image.dataUrl || image.url ? (
+                      <img src={image.dataUrl ?? image.url} alt={`AI 候选图 ${index + 1}`} />
+                    ) : (
+                      <div className="muted">无预览</div>
+                    )}
+                    <div>
+                      <strong>候选图 {index + 1}</strong>
+                      {image.revisedPrompt && <span className="muted">{image.revisedPrompt}</span>}
+                      <button className="secondary-button" onClick={() => saveGeneratedImage(image, index)}>
+                        保存到资源库
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="asset-grid" style={{ marginTop: 14 }}>
             {assets.map((asset) => (
               <button
@@ -184,9 +389,9 @@ export function AssetsPage() {
           </div>
           {selectedAsset ? (
             <div className="form-grid">
-              {selectedAsset.dataUrl && selectedAsset.type === "image" && (
+              {selectedAsset.type === "image" && (selectedAsset.dataUrl || selectedAsset.thumbnailUrl || selectedAsset.path) && (
                 <img
-                  src={selectedAsset.dataUrl}
+                  src={selectedAsset.dataUrl ?? selectedAsset.thumbnailUrl ?? selectedAsset.path}
                   alt={selectedAsset.name}
                   style={{ width: "100%", maxHeight: 360, objectFit: "contain", borderRadius: 8, background: "#eef2f7" }}
                 />
@@ -365,4 +570,8 @@ function splitList(value: string): string[] {
     .split(/[,，\n]/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function dataUrlMimeType(dataUrl?: string): string | undefined {
+  return dataUrl?.match(/^data:([^;]+);base64,/)?.[1];
 }

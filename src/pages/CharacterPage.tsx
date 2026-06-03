@@ -1,15 +1,17 @@
 import { Bot, Copy, FileJson, Plus, Save, Sparkles, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { maybeAIInvocationLog } from "../core/ai/logging";
 import { checkCharacterWithAI, generateCharacterDraftWithAI, rewriteCharacterFieldWithAI, suggestWorldBookWithAI } from "../core/ai/operations";
-import { findTaskPreset } from "../core/ai/presets";
+import { resolveAIForTask } from "../core/ai/presets";
 import { prettyJson, toV2Character } from "../core/exporter/character";
-import type { AIProviderConfig, AIPreset, CompatibilityReport, InternalCharacter, QualityIssue } from "../core/schema/types";
-import { checkCharacterQuality } from "../core/quality/checks";
+import { extractCharacterFromPngDataUrl } from "../core/exporter/pngMetadata";
+import { importCharacterJson, type ImportCharacterResult } from "../core/importer/character";
+import type { CompatibilityReport, InternalCharacter, QualityIssue } from "../core/schema/types";
+import { buildCharacterTokenBreakdown, checkCharacterQuality } from "../core/quality/checks";
 import { diffSnapshotAgainstCurrent, summarizeDiff } from "../core/version/diff";
 import { normalizeWorldBookEntryCandidate } from "../core/worldbook/normalize";
 import { getCurrentProject, useAppStore } from "../stores/useAppStore";
-import { readFileAsText } from "../utils/file";
+import { readFileAsDataUrl, readFileAsText } from "../utils/file";
 
 type TextFieldKey =
   | "description"
@@ -18,7 +20,8 @@ type TextFieldKey =
   | "firstMessage"
   | "exampleMessages"
   | "systemPrompt"
-  | "postHistoryInstructions";
+  | "postHistoryInstructions"
+  | "creatorNotes";
 
 type FieldOperation = "generate" | "polish" | "shorten" | "expand" | "natural" | "concise" | "immersive";
 
@@ -29,7 +32,8 @@ const textFields: Array<{ key: TextFieldKey; label: string }> = [
   { key: "firstMessage", label: "first_mes" },
   { key: "exampleMessages", label: "mes_example" },
   { key: "systemPrompt", label: "system_prompt" },
-  { key: "postHistoryInstructions", label: "post_history_instructions" }
+  { key: "postHistoryInstructions", label: "post_history_instructions" },
+  { key: "creatorNotes", label: "creator_notes" }
 ];
 
 const fieldOperations: Array<{ id: FieldOperation; label: string }> = [
@@ -55,6 +59,7 @@ export function CharacterPage() {
   const [aiQualityIssues, setAiQualityIssues] = useState<QualityIssue[]>([]);
   const [aiQualityRaw, setAiQualityRaw] = useState("");
   const [importStatus, setImportStatus] = useState("");
+  const [pendingImport, setPendingImport] = useState<ImportCharacterResult | undefined>();
   if (!project) return null;
   const activeProject = project;
   const selected = activeProject.characters.find((character) => character.id === state.selectedCharacterId) ?? activeProject.characters[0];
@@ -62,6 +67,7 @@ export function CharacterPage() {
   const filteredCharacters = activeProject.characters.filter((character) => character.name.toLowerCase().includes(search.toLowerCase()));
   const v2Preview = selected ? prettyJson(toV2Character(selected, linkedWorldBook)) : "";
   const issues = selected ? checkCharacterQuality(selected, linkedWorldBook) : [];
+  const tokenBreakdown = selected ? buildCharacterTokenBreakdown(selected, linkedWorldBook) : undefined;
   const snapshots = selected
     ? activeProject.versions.filter((version) => version.targetType === "character" && version.targetId === selected.id)
     : [];
@@ -75,14 +81,36 @@ export function CharacterPage() {
     state.updateCharacter(selected.id, patch);
   }
 
-  async function importJson(file: File) {
+  async function importCharacterFile(file: File) {
     try {
-      const text = await readFileAsText(file);
-      state.importCharacter(JSON.parse(text), file.name);
-      setImportStatus(`已导入角色 JSON：${file.name}`);
+      const result = await parseCharacterImportFile(file);
+      if (result.report.importedAsReadonly) {
+        setPendingImport(result);
+        setImportStatus(`只读扫描完成：${file.name}。请确认后再转换导入。`);
+        return;
+      }
+      state.importCharacterResult(result);
+      setPendingImport(undefined);
+      setImportStatus(`已导入角色：${file.name}`);
     } catch (error) {
-      setImportStatus(`角色 JSON 导入失败：${error instanceof Error ? error.message : String(error)}。现有角色未被修改。`);
+      setImportStatus(`角色导入失败：${error instanceof Error ? error.message : String(error)}。现有角色未被修改。`);
     }
+  }
+
+  async function parseCharacterImportFile(file: File): Promise<ImportCharacterResult> {
+    if (isPngFile(file)) {
+      const dataUrl = await readFileAsDataUrl(file);
+      return extractCharacterFromPngDataUrl(dataUrl, file.name);
+    }
+    const text = await readFileAsText(file);
+    return importCharacterJson(JSON.parse(text), file.name);
+  }
+
+  function confirmPendingImport() {
+    if (!pendingImport) return;
+    state.importCharacterResult(pendingImport);
+    setImportStatus(`已确认并转换导入：${pendingImport.character.name}`);
+    setPendingImport(undefined);
   }
 
   async function generateDraft() {
@@ -172,17 +200,13 @@ export function CharacterPage() {
     }
   }
 
-  function resolveTaskAI(taskType: string): { provider?: AIProviderConfig; preset?: AIPreset } {
-    const preset = findTaskPreset(activeProject.aiPresets, taskType);
-    const provider =
-      activeProject.aiProviders.find((item) => item.id === preset?.providerId) ??
-      activeProject.aiProviders.find((item) => item.id === state.selectedProviderId) ??
-      activeProject.aiProviders[0];
-    if (!provider) return { preset };
-    return {
-      preset,
-      provider: preset?.modelOverride ? { ...provider, defaultModel: preset.modelOverride } : provider
-    };
+  function resolveTaskAI(taskType: string) {
+    return resolveAIForTask({
+      providers: activeProject.aiProviders,
+      presets: activeProject.aiPresets,
+      taskType,
+      selectedProviderId: state.selectedProviderId
+    });
   }
 
   function applyAIResult() {
@@ -240,12 +264,70 @@ export function CharacterPage() {
             <Plus size={17} /> 新建
           </button>
           <label className="secondary-button">
-            <FileJson size={17} /> 导入 JSON
-            <input hidden type="file" accept="application/json,.json" onChange={(event) => event.target.files?.[0] && importJson(event.target.files[0])} />
+            <FileJson size={17} /> 导入 JSON/PNG
+            <input hidden type="file" accept="application/json,.json,image/png,.png" onChange={(event) => event.target.files?.[0] && importCharacterFile(event.target.files[0])} />
           </label>
         </div>
       </div>
       {importStatus && <div className="callout" style={{ marginBottom: 14 }}><pre>{importStatus}</pre></div>}
+      {pendingImport && (
+        <section className="panel import-preview">
+          <div className="panel-title">
+            <FileJson size={18} />
+            <span>复杂卡只读扫描</span>
+          </div>
+          <div className="form-grid">
+            <div className="issue warning">
+              <b>{pendingImport.report.level}</b>
+              <span>
+                {pendingImport.report.source} / {compatibilityCardKindLabel(pendingImport.report.cardKind)} / 建议
+                {pendingImport.report.suggestedMode === "light" ? "轻量制卡" : "高级工程"}
+              </span>
+            </div>
+            <div className="trigger-meta">
+              {compatibilityFeatureLabels(pendingImport.report).map((label) => (
+                <span key={label}>{label}</span>
+              ))}
+            </div>
+            <p className="muted">
+              字段完整度：{Math.round(pendingImport.report.fieldCompleteness.score * 100)}%
+              {pendingImport.report.fieldCompleteness.missing.length
+                ? ` / 缺失：${pendingImport.report.fieldCompleteness.missing.join(", ")}`
+                : ""}
+            </p>
+            {pendingImport.report.dependencies.length > 0 && (
+              <div className="list">
+                {pendingImport.report.dependencies.slice(0, 5).map((dependency) => (
+                  <div className="list-item" key={`${dependency.type}:${dependency.label}:${dependency.evidence}`}>
+                    <strong>{dependency.type} / {dependency.label}</strong>
+                    <span className="muted">{dependency.evidence}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <ul className="issue-list">
+              {pendingImport.report.readonlyReasons.map((reason) => (
+                <li className="issue warning" key={reason}>
+                  <b>只读</b>
+                  <span>{reason}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="muted">{pendingImport.report.recommendedActions.slice(0, 3).join(" / ")}</p>
+            <div className="toolbar">
+              <button className="primary-button" onClick={confirmPendingImport}>
+                确认转换导入
+              </button>
+              <button className="secondary-button" onClick={() => {
+                setPendingImport(undefined);
+                setImportStatus("已取消复杂卡导入，现有角色未被修改。");
+              }}>
+                放弃导入
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
 
       <div className="triple">
         <aside className="panel">
@@ -315,10 +397,16 @@ export function CharacterPage() {
               </div>
               <EditorArea label="system_prompt" value={selected.systemPrompt ?? ""} onChange={(value) => update({ systemPrompt: value })} onAI={() => runFieldOperation("systemPrompt", "polish")} busy={busy === "systemPrompt:polish"} />
               <EditorArea label="post_history_instructions" value={selected.postHistoryInstructions ?? ""} onChange={(value) => update({ postHistoryInstructions: value })} onAI={() => runFieldOperation("postHistoryInstructions", "polish")} busy={busy === "postHistoryInstructions:polish"} />
+              <EditorArea label="creator_notes" value={selected.creatorNotes ?? ""} onChange={(value) => update({ creatorNotes: value })} onAI={() => runFieldOperation("creatorNotes", "polish")} busy={busy === "creatorNotes:polish"} />
               <label>
                 alternate_greetings
                 <textarea value={selected.alternateGreetings.join("\n---\n")} onChange={(event) => update({ alternateGreetings: event.target.value.split(/\n---\n/g).filter(Boolean) })} />
               </label>
+              <ExtensionsEditor
+                characterId={selected.id}
+                extensions={selected.extensions}
+                onApply={(extensions) => update({ extensions })}
+              />
               <label>
                 linked worldbooks
                 <select
@@ -436,6 +524,25 @@ export function CharacterPage() {
             <Sparkles size={18} />
             <span>质量检查</span>
           </div>
+          {tokenBreakdown && (
+            <section className="panel compact">
+              <div className="panel-title">Token 估算</div>
+              <div className="metric-row">
+                <span>总计</span>
+                <strong>{tokenBreakdown.total}</strong>
+              </div>
+              {tokenBreakdown.sections
+                .filter((section) => section.tokens > 0)
+                .sort((a, b) => b.tokens - a.tokens)
+                .slice(0, 8)
+                .map((section) => (
+                  <div className="metric-row" key={section.id}>
+                    <span>{section.label}</span>
+                    <strong>{section.tokens}</strong>
+                  </div>
+                ))}
+            </section>
+          )}
           <div className="toolbar" style={{ marginBottom: 10 }}>
             <button className="secondary-button" onClick={runAIQualityCheck} disabled={busy === "validateCard"}>
               AI 检查问题
@@ -632,6 +739,63 @@ function EditorArea({
   );
 }
 
+function ExtensionsEditor({
+  characterId,
+  extensions,
+  onApply
+}: {
+  characterId: string;
+  extensions: Record<string, unknown>;
+  onApply: (extensions: Record<string, unknown>) => void;
+}) {
+  const [draft, setDraft] = useState(() => formatExtensions(extensions));
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    setDraft(formatExtensions(extensions));
+    setStatus("");
+  }, [characterId, extensions]);
+
+  function applyDraft() {
+    try {
+      const parsed = JSON.parse(draft) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        setStatus("extensions 必须是 JSON object。");
+        return;
+      }
+      onApply(parsed as Record<string, unknown>);
+      setDraft(JSON.stringify(parsed, null, 2));
+      setStatus("extensions 已应用。");
+    } catch (error) {
+      setStatus(`JSON 解析失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  return (
+    <label>
+      <span className="toolbar" style={{ justifyContent: "space-between" }}>
+        extensions
+        <span className="toolbar">
+          <button type="button" className="ghost-button" onClick={() => setDraft(formatExtensions(extensions))}>
+            重置
+          </button>
+          <button type="button" className="secondary-button" onClick={applyDraft}>
+            应用 JSON
+          </button>
+        </span>
+      </span>
+      <textarea
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={applyDraft}
+        spellCheck={false}
+        style={{ minHeight: 180, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" }}
+      />
+      {status && <span className={status.includes("失败") || status.includes("必须") ? "field-error" : "muted"}>{status}</span>}
+    </label>
+  );
+}
+
 function splitList(value: string): string[] {
   return value
     .split(/[,，\n]/)
@@ -670,8 +834,13 @@ function characterContext(character: InternalCharacter): string {
     `mes_example: ${character.exampleMessages ?? ""}`,
     `system_prompt: ${character.systemPrompt ?? ""}`,
     `post_history_instructions: ${character.postHistoryInstructions ?? ""}`,
+    `creator_notes: ${character.creatorNotes ?? ""}`,
     `tags: ${character.tags.join(", ")}`
   ].join("\n");
+}
+
+function formatExtensions(extensions: Record<string, unknown>): string {
+  return JSON.stringify(extensions ?? {}, null, 2);
 }
 
 function shorten(value: string): string {
@@ -698,4 +867,8 @@ function compatibilityFeatureLabels(report: CompatibilityReport): string[] {
   if (report.detected.frontend) labels.push("前端 UI");
   if (report.detected.extensions) labels.push("扩展字段");
   return labels.length ? labels : ["未检测到重型依赖"];
+}
+
+function isPngFile(file: File): boolean {
+  return file.type === "image/png" || file.name.toLowerCase().endsWith(".png");
 }

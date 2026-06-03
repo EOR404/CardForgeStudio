@@ -7,8 +7,17 @@ import type {
   QualityIssue,
   TriggeredWorldBookEntry
 } from "../schema/types";
+import { estimateTokens } from "../prompt-builder/buildPrompt";
+import { callImageGeneration, type GeneratedImage, type ImageGenerationInput } from "./image";
 import { runLoggedCompletion } from "./logging";
+import { createAIInvocationLog, LoggedAIError } from "./logging";
 import { buildPresetMessages } from "./presets";
+
+export type ImagePromptDraft = {
+  positivePrompt: string;
+  negativePrompt?: string;
+  notes?: string;
+};
 
 export async function generateCharacterDraftWithAI(
   provider: AIProviderConfig,
@@ -148,6 +157,75 @@ export async function diagnoseTestWithAI(
   };
 }
 
+export async function generateImagePromptWithAI(
+  provider: AIProviderConfig,
+  input: {
+    character: InternalCharacter;
+    purpose: string;
+    style: string;
+  },
+  preset?: AIPreset
+): Promise<AIActionResult<ImagePromptDraft>> {
+  const messages: ChatMessage[] = preset
+    ? buildPresetMessages(preset, { character: input.character, purpose: input.purpose, style: input.style })
+    : [
+        {
+          role: "system",
+          content:
+            "你是角色卡图片提示词助手。只输出 JSON，不输出 Markdown。字段为 positivePrompt, negativePrompt, notes。positivePrompt 使用英文逗号分隔，适合文生图；negativePrompt 放低质量和不需要的元素。"
+        },
+        {
+          role: "user",
+          content: `请根据角色卡生成 ${input.purpose} 图片提示词，风格：${input.style}。\n${JSON.stringify(input.character, null, 2)}`
+        }
+      ];
+  const { content: raw, log } = await runLoggedCompletion(provider, messages, "imagePrompt", preset?.paramsOverride ?? { maxTokens: 900 });
+  const parsed = parseAiJson(raw);
+  return {
+    raw,
+    parsed: normalizeImagePromptDraft(parsed.parsed, raw),
+    error: parsed.error,
+    log
+  };
+}
+
+export async function generateImagesWithAI(
+  provider: AIProviderConfig,
+  input: ImageGenerationInput
+): Promise<AIActionResult<GeneratedImage[]>> {
+  const startedAt = performance.now();
+  try {
+    const images = await callImageGeneration(provider, input);
+    const raw = JSON.stringify(images.map((image) => ({
+      hasDataUrl: Boolean(image.dataUrl),
+      url: image.url,
+      revisedPrompt: image.revisedPrompt
+    })), null, 2);
+    const log = createAIInvocationLog({
+      provider,
+      taskType: "imageGeneration",
+      inputTokens: estimateTokens([input.prompt, input.negativePrompt ?? ""].join("\n")),
+      outputTokens: images.length,
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      success: true,
+      rawOutput: raw
+    });
+    return { raw, parsed: images, log };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const log = createAIInvocationLog({
+      provider,
+      taskType: "imageGeneration",
+      inputTokens: estimateTokens([input.prompt, input.negativePrompt ?? ""].join("\n")),
+      outputTokens: 0,
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      success: false,
+      errorMessage: message
+    });
+    throw new LoggedAIError(message, log);
+  }
+}
+
 export function parseAiJson(raw: string): AIActionResult {
   const trimmed = raw.trim();
   const candidates = [trimmed, extractJsonBlock(trimmed)].filter(Boolean) as string[];
@@ -185,4 +263,25 @@ function normalizeDiagnosticIssues(value: unknown): QualityIssue[] | undefined {
       message: typeof record.message === "string" ? record.message : JSON.stringify(item)
     };
   });
+}
+
+function normalizeImagePromptDraft(value: unknown, raw: string): ImagePromptDraft {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    const positive =
+      stringValue(record.positivePrompt) ??
+      stringValue(record.positive_prompt) ??
+      stringValue(record.prompt) ??
+      raw.trim();
+    return {
+      positivePrompt: positive,
+      negativePrompt: stringValue(record.negativePrompt) ?? stringValue(record.negative_prompt),
+      notes: stringValue(record.notes)
+    };
+  }
+  return { positivePrompt: raw.trim() };
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
 }

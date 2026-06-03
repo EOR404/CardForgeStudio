@@ -68,9 +68,15 @@ function collectDependencies(
   }
   addWhen(dependencies, /regex|正则|replace|substitute|substitution|scripted_regex/.test(lower), "regex", "正则规则", "regex / replace / substitute");
   addWhen(dependencies, /mvu|_\.(set|assign|update)|变量|variable|stat_data|状态栏|好感度/.test(lower), "mvu", "MVU / 变量系统", "mvu / _.set / variable");
-  addWhen(dependencies, /stscript|quick[\s_-]?reply|javascript|script|on_chat|execute/.test(lower), "script", "脚本 / Quick Reply", "script / stscript / quick reply");
+  addWhen(
+    dependencies,
+    /(^|[^a-z])stscript([^a-z]|$)|quick[\s_-]?reply|\bjavascript\b|["'](?:scripts?|stscript|quickreplies|quick_replies|quickreply|quick_reply|javascript|js)["']\s*:|on_chat|\bexecute\b/.test(lower),
+    "script",
+    "脚本 / Quick Reply",
+    "script / stscript / quick reply"
+  );
   addWhen(dependencies, /<html|<style|<script|frontend|iframe|document\.|<button/.test(lower), "frontend", "前端卡界面", "html / style / script / frontend");
-  addWhen(dependencies, /plugin|插件|extension|酒馆助手|sillytavern|tavern/.test(lower), "plugin", "第三方扩展依赖", "plugin / extension / SillyTavern");
+  addWhen(dependencies, /plugin|插件|酒馆助手|sillytavern-extension|tavern-extension/.test(lower), "plugin", "第三方扩展依赖", "plugin / extension / SillyTavern");
   if (Object.keys(extensions ?? {}).length) {
     dependencies.push({
       type: "extension",
@@ -188,4 +194,3 @@ function safeStringify(raw: unknown): string {
     return String(raw);
   }
 }
-

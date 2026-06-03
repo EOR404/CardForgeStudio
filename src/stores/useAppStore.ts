@@ -4,6 +4,7 @@ import {
   createCustomTestCaseDraft,
   createPresetDraft,
   createProjectDraft,
+  createProviderDraft,
   createRegexRuleDraft,
   createWorldBookDraft,
   createWorldBookEntryDraft,
@@ -14,6 +15,7 @@ import type {
   AppPage,
   Asset,
   AIInvocationLog,
+  AIProviderConfig,
   AIPreset,
   CardProject,
   CustomTestCase,
@@ -347,22 +349,28 @@ export const useAppStore = create<AppState>((set, get) => ({
           )
         };
       }
-      const provider = {
+      const draft = createProviderDraft();
+      const provider: AIProviderConfig = {
+        ...draft,
         id: uid("provider"),
-        name: String(patch.name ?? "OpenAI-compatible"),
-        providerType: "openai-compatible" as const,
-        baseUrl: String(patch.baseUrl ?? ""),
-        apiKey: String(patch.apiKey ?? ""),
-        defaultModel: String(patch.defaultModel ?? ""),
-        models: [],
-        headers: {},
+        name: String(patch.name ?? draft.name),
+        providerType: "openai-compatible",
+        baseUrl: String(patch.baseUrl ?? draft.baseUrl),
+        proxyUrl: String(patch.proxyUrl ?? draft.proxyUrl ?? ""),
+        apiKey: String(patch.apiKey ?? draft.apiKey ?? ""),
+        defaultModel: String(patch.defaultModel ?? draft.defaultModel),
+        models: Array.isArray(patch.models) ? patch.models.map(String).filter(Boolean) : draft.models,
+        headers: isRecord(patch.headers) ? Object.fromEntries(Object.entries(patch.headers).map(([key, value]) => [key, String(value ?? "")])) : draft.headers,
+        defaultTaskTypes: Array.isArray(patch.defaultTaskTypes)
+          ? patch.defaultTaskTypes.map(String).filter(Boolean)
+          : draft.defaultTaskTypes,
         defaultParams: {
           temperature: Number(patch.temperature ?? 0.7),
           topP: 1,
           maxTokens: Number(patch.maxTokens ?? 1200),
           stream: false
         },
-        capabilities: ["chat" as const, "json" as const],
+        capabilities: draft.capabilities,
         enabled: true,
         createdAt: now(),
         updatedAt: now()

@@ -179,12 +179,18 @@ export type AIProviderConfig = {
     | "anthropic"
     | "gemini"
     | "ollama"
+    | "lm-studio"
+    | "vllm"
+    | "comfyui"
+    | "stable-diffusion-webui"
     | "custom";
   baseUrl: string;
+  proxyUrl?: string;
   apiKey?: string;
   defaultModel: string;
   models?: string[];
   headers?: Record<string, string>;
+  defaultTaskTypes?: string[];
   defaultParams: {
     temperature?: number;
     topP?: number;

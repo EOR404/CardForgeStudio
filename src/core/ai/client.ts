@@ -26,6 +26,7 @@ export async function callOpenAICompatibleDetailed(
   if (!config.baseUrl) throw new Error("Provider 缺少 Base URL。");
   if (!config.defaultModel) throw new Error("Provider 缺少模型名。");
   const endpoint = normalizeChatEndpoint(config.baseUrl);
+  const proxyEndpoint = normalizeProxyEndpoint(config.proxyUrl);
   const stream = params.stream ?? config.defaultParams.stream ?? false;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -43,11 +44,7 @@ export async function callOpenAICompatibleDetailed(
   const startedAt = performance.now();
   let response: Response;
   try {
-    response = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body)
-    });
+    response = await sendProviderRequest(endpoint, headers, body, proxyEndpoint, config.providerType);
   } catch (error) {
     throw new Error(`网络请求失败：${error instanceof Error ? error.message : String(error)}`);
   }
@@ -76,7 +73,7 @@ export async function callOpenAICompatibleDetailed(
       totalTokens: inputTokens + outputTokens
     };
   }
-  const json = (await response.json()) as {
+  const json = await readCompletionJson(response) as {
     choices?: Array<{ message?: { content?: string }; text?: string }>;
     error?: { message?: string };
     usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
@@ -135,23 +132,72 @@ function normalizeChatEndpoint(baseUrl: string): string {
   return `${trimmed}/chat/completions`;
 }
 
+function normalizeProxyEndpoint(proxyUrl?: string): string | undefined {
+  const trimmed = proxyUrl?.trim();
+  return trimmed || undefined;
+}
+
+function sendProviderRequest(
+  endpoint: string,
+  headers: Record<string, string>,
+  body: object,
+  proxyEndpoint: string | undefined,
+  providerType: AIProviderConfig["providerType"]
+): Promise<Response> {
+  if (!proxyEndpoint) {
+    return fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body)
+    });
+  }
+  return fetch(proxyEndpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      endpoint,
+      method: "POST",
+      headers,
+      body,
+      providerType
+    })
+  });
+}
+
 async function safeResponseText(response: Response): Promise<string> {
   const text = await response.text();
   return text.slice(0, 800);
 }
 
 async function readOpenAIStream(response: Response): Promise<string> {
-  if (!response.body) return parseOpenAIStreamText(await response.text());
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let streamText = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    streamText += decoder.decode(value, { stream: true });
+  return parseOpenAIStreamText(unwrapProxyText(await response.text()));
+}
+
+async function readCompletionJson(response: Response): Promise<unknown> {
+  const json = await response.json();
+  return unwrapProxyJson(json);
+}
+
+function unwrapProxyJson(json: unknown): unknown {
+  if (!json || typeof json !== "object" || Array.isArray(json) || !("body" in json)) return json;
+  const body = (json as { body?: unknown }).body;
+  if (typeof body === "string") {
+    try {
+      return JSON.parse(body);
+    } catch {
+      return json;
+    }
   }
-  streamText += decoder.decode();
-  return parseOpenAIStreamText(streamText);
+  return body ?? json;
+}
+
+function unwrapProxyText(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as { body?: unknown };
+    return typeof parsed.body === "string" ? parsed.body : text;
+  } catch {
+    return text;
+  }
 }
 
 function estimateMessageTokens(messages: ChatMessage[]): number {

@@ -2,7 +2,7 @@ import { Bot, BookOpen, FileJson, Plus, Save, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { extractWorldBookEntriesWithAI } from "../core/ai/operations";
 import { maybeAIInvocationLog } from "../core/ai/logging";
-import { findTaskPreset } from "../core/ai/presets";
+import { resolveAIForTask } from "../core/ai/presets";
 import { toWorldBookJson, prettyJson } from "../core/exporter/character";
 import { checkWorldBookQuality } from "../core/quality/checks";
 import { diffWorldBookSnapshotAgainstCurrent, summarizeDiff } from "../core/version/diff";
@@ -10,8 +10,6 @@ import { analyzeWorldBookTrigger } from "../core/worldbook/trigger";
 import { categoryLabel, classifyWorldBookEntry, worldBookCategories } from "../core/worldbook/classify";
 import { normalizeWorldBookEntryCandidate } from "../core/worldbook/normalize";
 import type {
-  AIProviderConfig,
-  AIPreset,
   WorldBookEntry,
   WorldBookEntryCategory,
   WorldBookEntryCondition,
@@ -70,14 +68,13 @@ export function WorldBookPage() {
     state.updateWorldBookEntry(worldBook.id, selectedEntry.id, patch);
   }
 
-  function resolveTaskAI(taskType: string): { provider?: AIProviderConfig; preset?: AIPreset } {
-    const preset = findTaskPreset(activeProject.aiPresets, taskType);
-    const provider =
-      activeProject.aiProviders.find((item) => item.id === preset?.providerId) ??
-      activeProject.aiProviders.find((item) => item.id === state.selectedProviderId) ??
-      activeProject.aiProviders[0];
-    if (!provider) return { preset };
-    return { preset, provider: preset?.modelOverride ? { ...provider, defaultModel: preset.modelOverride } : provider };
+  function resolveTaskAI(taskType: string) {
+    return resolveAIForTask({
+      providers: activeProject.aiProviders,
+      presets: activeProject.aiPresets,
+      taskType,
+      selectedProviderId: state.selectedProviderId
+    });
   }
 
   async function extractEntries() {

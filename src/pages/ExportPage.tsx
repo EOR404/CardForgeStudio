@@ -8,9 +8,11 @@ import {
   toV3Character,
   toWorldBookJson
 } from "../core/exporter/character";
+import { getV2PngBatchImageWarnings } from "../core/exporter/batch";
 import { buildExportPreflightReport, formatExportReportMarkdown, targetLabel, type ExportTarget } from "../core/exporter/report";
 import { embedV2MetadataInPngDataUrl, extractCharacterFromPngDataUrl } from "../core/exporter/pngMetadata";
-import type { Asset, InternalCharacter, VersionSnapshot } from "../core/schema/types";
+import { importCharacterJson, type ImportCharacterResult } from "../core/importer/character";
+import type { Asset, CompatibilityReport, InternalCharacter, VersionSnapshot } from "../core/schema/types";
 import { getCurrentProject, useAppStore } from "../stores/useAppStore";
 import { downloadDataUrl, downloadTextFile, readFileAsDataUrl, readFileAsText, safeFileName } from "../utils/file";
 
@@ -24,7 +26,9 @@ export function ExportPage() {
   const [format, setFormat] = useState<Format>("v2_json");
   const [target, setTarget] = useState<ExportTarget>("sillytavern_v2");
   const [selectedVersionId, setSelectedVersionId] = useState("current");
+  const [selectedBatchImageIds, setSelectedBatchImageIds] = useState<string[]>([]);
   const [message, setMessage] = useState("");
+  const [pendingImport, setPendingImport] = useState<ImportCharacterResult | undefined>();
   if (!project) return null;
   const activeProject = project;
   const character = activeProject.characters.find((item) => item.id === state.selectedCharacterId) ?? activeProject.characters[0];
@@ -47,6 +51,12 @@ export function ExportPage() {
     .filter((item) => item.type === "image")
     .sort((a, b) => rankExportImage(b, exportCharacter) - rankExportImage(a, exportCharacter) || a.name.localeCompare(b.name));
   const imageAsset = imageAssets.find((item) => item.id === state.selectedAssetId) ?? imageAssets[0];
+  const batchImageAssets =
+    format === "v2_png" && selectedBatchImageIds.length
+      ? imageAssets.filter((asset) => selectedBatchImageIds.includes(asset.id))
+      : imageAsset
+        ? [imageAsset]
+        : [];
   const preflight = buildExportPreflightReport({
     project: activeProject,
     format,
@@ -57,7 +67,8 @@ export function ExportPage() {
   });
   const warnings = preflight.checks
     .filter((item) => item.level === "warning" || item.level === "blocker")
-    .map((item) => item.message);
+    .map((item) => item.message)
+    .concat(getV2PngBatchImageWarnings(batchImageAssets));
 
   async function exportNow() {
     if (!exportCharacter && format !== "worldbook_json") {
@@ -125,25 +136,29 @@ export function ExportPage() {
         state.addExportRecord(createExportRecord({ worldBookIds: [worldBook.id], assetIds: [], format, outputPath: fileName, warnings }));
       }
       if (format === "v2_png" && exportCharacter) {
-        if (!imageAsset?.dataUrl) throw new Error("请选择 PNG 图片资源。");
-        const dataUrl = await embedV2MetadataInPngDataUrl(imageAsset.dataUrl, exportCharacter, worldBook);
-        const fileName = `${safeFileName(exportCharacter.name)}${versionSuffix}.v2.png`;
-        downloadDataUrl(fileName, dataUrl);
-        downloadTextFile(`${safeFileName(exportCharacter.name)}${versionSuffix}.v2.backup.json`, prettyJson(toV2Character(exportCharacter, worldBook)));
-        state.addExportRecord(
-          createExportRecord({
-            characterId: exportCharacter.id,
-            characterVersionId: selectedSnapshot?.snapshot.id,
-            worldBookIds: worldBook ? [worldBook.id] : [],
-            assetIds: [imageAsset.id],
-            format,
-            outputPath: fileName,
-            warnings
-          })
-        );
+        if (!batchImageAssets.length) throw new Error("请选择 PNG 图片资源。");
+        for (const [index, image] of batchImageAssets.entries()) {
+          if (!image.dataUrl) throw new Error(`图片「${image.name}」缺少 dataUrl。`);
+          const dataUrl = await embedV2MetadataInPngDataUrl(image.dataUrl, exportCharacter, worldBook);
+          const imageSuffix = batchImageAssets.length > 1 ? `.${index + 1}-${safeFileName(image.name.replace(/\.[^.]+$/, ""))}` : "";
+          const fileName = `${safeFileName(exportCharacter.name)}${versionSuffix}${imageSuffix}.v2.png`;
+          downloadDataUrl(fileName, dataUrl);
+          downloadTextFile(`${safeFileName(exportCharacter.name)}${versionSuffix}${imageSuffix}.v2.backup.json`, prettyJson(toV2Character(exportCharacter, worldBook)));
+          state.addExportRecord(
+            createExportRecord({
+              characterId: exportCharacter.id,
+              characterVersionId: selectedSnapshot?.snapshot.id,
+              worldBookIds: worldBook ? [worldBook.id] : [],
+              assetIds: [image.id],
+              format,
+              outputPath: fileName,
+              warnings
+            })
+          );
+        }
       }
       downloadExportReport(false);
-      setMessage("导出已触发浏览器下载。");
+      setMessage(format === "v2_png" && batchImageAssets.length > 1 ? `已触发 ${batchImageAssets.length} 张 V2 PNG 下载。` : "导出已触发浏览器下载。");
     } catch (error) {
       setMessage(`导出失败：${error instanceof Error ? error.message : String(error)}。源数据未被修改。`);
     }
@@ -162,6 +177,11 @@ export function ExportPage() {
       lines.push(`导出前需要确认 ${warningChecks.length} 个警告 / 数据损失提示：`);
       lines.push(...warningChecks.slice(0, 8).map((item) => `- ${item.message}`));
     }
+    if (format === "v2_png" && batchImageAssets.length > 1) {
+      if (lines.length) lines.push("");
+      lines.push(`批量 V2 PNG：将使用 ${batchImageAssets.length} 张图片分别导出角色卡。`);
+      lines.push(...batchImageAssets.slice(0, 8).map((item) => `- ${item.name}`));
+    }
     if (!lines.length) return "";
     lines.push("");
     lines.push("确认后将继续导出，并把这些提示写入导出历史。");
@@ -178,8 +198,7 @@ export function ExportPage() {
   async function importJson(file: File) {
     try {
       const text = await readFileAsText(file);
-      state.importCharacter(JSON.parse(text), file.name);
-      setMessage("角色 JSON 已导入，并保留原始 JSON。");
+      handleCharacterImportResult(importCharacterJson(JSON.parse(text), file.name), file.name);
     } catch (error) {
       setMessage(`角色 JSON 导入失败：${error instanceof Error ? error.message : String(error)}。现有角色未被修改。`);
     }
@@ -189,11 +208,28 @@ export function ExportPage() {
     try {
       const dataUrl = await readFileAsDataUrl(file);
       const result = extractCharacterFromPngDataUrl(dataUrl, file.name);
-      state.importCharacterResult(result);
-      setMessage("V2 PNG metadata 已读取并导入。");
+      handleCharacterImportResult(result, file.name);
     } catch (error) {
       setMessage(`PNG 导入失败：${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  function handleCharacterImportResult(result: ImportCharacterResult, fileName: string) {
+    if (result.report.importedAsReadonly) {
+      setPendingImport(result);
+      setMessage(`只读扫描完成：${fileName}。请确认后再转换导入。`);
+      return;
+    }
+    state.importCharacterResult(result);
+    setPendingImport(undefined);
+    setMessage(`角色已导入：${fileName}`);
+  }
+
+  function confirmPendingImport() {
+    if (!pendingImport) return;
+    state.importCharacterResult(pendingImport);
+    setMessage(`已确认并转换导入：${pendingImport.character.name}`);
+    setPendingImport(undefined);
   }
 
   async function importExportImage(file: File) {
@@ -274,6 +310,37 @@ export function ExportPage() {
                 ))}
               </select>
             </label>
+            {format === "v2_png" && imageAssets.length > 0 && (
+              <section className="panel compact">
+                <div className="panel-title">批量 V2 PNG 图片</div>
+                <p className="muted">勾选多张图片时，会为当前角色分别生成多张 V2 PNG；不勾选则使用上方单张图片。</p>
+                <div className="asset-grid compact">
+                  {imageAssets.map((asset) => (
+                    <label className="asset-tile selectable" key={asset.id}>
+                      <input
+                        type="checkbox"
+                        checked={selectedBatchImageIds.includes(asset.id)}
+                        onChange={(event) => {
+                          setSelectedBatchImageIds((current) =>
+                            event.target.checked ? [...new Set([...current, asset.id])] : current.filter((id) => id !== asset.id)
+                          );
+                        }}
+                      />
+                      {asset.thumbnailUrl || asset.dataUrl ? <img src={asset.thumbnailUrl ?? asset.dataUrl} alt={asset.name} /> : <div className="muted">无预览</div>}
+                      <span>
+                        <strong>{asset.name}</strong>
+                        <span className="muted">{purposeLabel(asset.purpose)}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                {selectedBatchImageIds.length > 0 && (
+                  <button className="ghost-button" type="button" onClick={() => setSelectedBatchImageIds([])}>
+                    清空批量选择
+                  </button>
+                )}
+              </section>
+            )}
             <label className="secondary-button">
               <ImageDown size={17} /> 临时导入导出图片
               <input hidden type="file" accept="image/png,image/*" onChange={(event) => event.target.files?.[0] && importExportImage(event.target.files[0])} />
@@ -371,6 +438,45 @@ export function ExportPage() {
               <ImageDown size={17} /> 导入 V2 PNG
               <input hidden type="file" accept="image/png,.png" onChange={(event) => event.target.files?.[0] && importPng(event.target.files[0])} />
             </label>
+            {pendingImport && (
+              <section className="callout">
+                <strong>复杂卡只读扫描</strong>
+                <div className={`issue ${pendingImport.report.importedAsReadonly ? "warning" : "info"}`} style={{ marginTop: 8 }}>
+                  <b>{pendingImport.report.level}</b>
+                  <span>
+                    {pendingImport.report.source} / {compatibilityCardKindLabel(pendingImport.report.cardKind)} / 建议
+                    {pendingImport.report.suggestedMode === "light" ? "轻量制卡" : "高级工程"}
+                  </span>
+                </div>
+                <div className="trigger-meta">
+                  {compatibilityFeatureLabels(pendingImport.report).map((label) => (
+                    <span key={label}>{label}</span>
+                  ))}
+                </div>
+                <ul className="issue-list" style={{ marginTop: 8 }}>
+                  {pendingImport.report.readonlyReasons.slice(0, 3).map((reason) => (
+                    <li className="issue warning" key={reason}>
+                      <b>只读</b>
+                      <span>{reason}</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="toolbar" style={{ marginTop: 10 }}>
+                  <button className="primary-button" onClick={confirmPendingImport}>
+                    确认转换导入
+                  </button>
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setPendingImport(undefined);
+                      setMessage("已取消复杂卡导入，现有角色未被修改。");
+                    }}
+                  >
+                    放弃导入
+                  </button>
+                </div>
+              </section>
+            )}
             <p className="muted">导入复杂卡时会生成兼容性报告，脚本与前端内容默认只读。</p>
           </div>
 
@@ -439,4 +545,25 @@ function purposeLabel(purpose?: Asset["purpose"]): string {
     other: "其他"
   };
   return purpose ? labels[purpose] : "未分类";
+}
+
+function compatibilityCardKindLabel(kind: CompatibilityReport["cardKind"]): string {
+  const labels: Record<CompatibilityReport["cardKind"], string> = {
+    light: "轻量卡",
+    medium: "中型卡",
+    heavy: "重型卡",
+    unknown: "未知类型"
+  };
+  return labels[kind];
+}
+
+function compatibilityFeatureLabels(report: CompatibilityReport): string[] {
+  const labels: string[] = [`格式：${report.detected.format}`];
+  if (report.detected.embeddedWorldBook) labels.push("内嵌世界书");
+  if (report.detected.regex) labels.push("正则");
+  if (report.detected.mvu) labels.push("MVU / 变量");
+  if (report.detected.scripts) labels.push("脚本");
+  if (report.detected.frontend) labels.push("前端 UI");
+  if (report.detected.extensions) labels.push("扩展字段");
+  return labels.length ? labels : ["未检测到重型依赖"];
 }

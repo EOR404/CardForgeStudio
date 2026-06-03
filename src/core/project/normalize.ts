@@ -60,6 +60,10 @@ const providerTypes: AIProviderConfig["providerType"][] = [
   "anthropic",
   "gemini",
   "ollama",
+  "lm-studio",
+  "vllm",
+  "comfyui",
+  "stable-diffusion-webui",
   "custom"
 ];
 const aiCapabilities: AIProviderConfig["capabilities"][number][] = [
@@ -273,10 +277,12 @@ function normalizeProvider(value: UnknownRecord): AIProviderConfig {
     name: asString(value.name, base.name),
     providerType: oneOf(value.providerType, providerTypes, "openai-compatible"),
     baseUrl: asString(value.baseUrl, ""),
+    proxyUrl: optionalString(value.proxyUrl) ?? "",
     apiKey: optionalString(value.apiKey) ?? "",
     defaultModel: asString(value.defaultModel, ""),
     models: stringArray(value.models),
     headers: stringRecord(value.headers),
+    defaultTaskTypes: value.defaultTaskTypes === undefined ? base.defaultTaskTypes : stringArray(value.defaultTaskTypes),
     defaultParams: {
       temperature: optionalNumber(params.temperature),
       topP: optionalNumber(params.topP),

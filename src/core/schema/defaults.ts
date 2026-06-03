@@ -22,6 +22,8 @@ export function now(): number {
   return Date.now();
 }
 
+export const DEFAULT_PROVIDER_TASK_TYPES: string[] = [];
+
 export function createCharacterDraft(name = "未命名角色"): InternalCharacter {
   const time = now();
   return {
@@ -92,10 +94,12 @@ export function createProviderDraft(): AIProviderConfig {
     name: "OpenAI-compatible",
     providerType: "openai-compatible",
     baseUrl: "https://api.openai.com/v1",
+    proxyUrl: "",
     apiKey: "",
     defaultModel: "gpt-4o-mini",
     models: [],
     headers: {},
+    defaultTaskTypes: DEFAULT_PROVIDER_TASK_TYPES,
     defaultParams: {
       temperature: 0.7,
       topP: 1,
@@ -184,6 +188,22 @@ export function createBuiltInPresets(): AIPreset[] {
         { key: "triggered", label: "触发世界书", required: false }
       ],
       paramsOverride: { temperature: 0.2, maxTokens: 1200 }
+    },
+    {
+      id: "preset_image_prompt",
+      name: "图片提示词生成",
+      taskType: "imagePrompt",
+      systemPrompt:
+        "你是角色卡图片提示词助手。只输出 JSON，不输出 Markdown。字段为 positivePrompt, negativePrompt, notes。positivePrompt 使用英文逗号分隔，适合文生图。",
+      userPromptTemplate:
+        "请根据角色卡生成 {{purpose}} 图片提示词，风格：{{style}}。\n角色：{{character}}",
+      outputMode: "json",
+      variables: [
+        { key: "character", label: "角色卡", required: true },
+        { key: "purpose", label: "图片用途", defaultValue: "头像" },
+        { key: "style", label: "风格", defaultValue: "anime character portrait, clean lighting" }
+      ],
+      paramsOverride: { temperature: 0.6, maxTokens: 900 }
     }
   ];
 }

@@ -1,7 +1,32 @@
-import type { AIPreset, ChatMessage } from "../schema/types";
+import type { AIProviderConfig, AIPreset, ChatMessage } from "../schema/types";
 
 export function findTaskPreset(presets: AIPreset[], taskType: string): AIPreset | undefined {
   return presets.find((preset) => preset.taskType === taskType);
+}
+
+export function resolveAIForTask({
+  providers,
+  presets,
+  taskType,
+  selectedProviderId
+}: {
+  providers: AIProviderConfig[];
+  presets: AIPreset[];
+  taskType: string;
+  selectedProviderId?: string;
+}): { provider?: AIProviderConfig; preset?: AIPreset } {
+  const preset = findTaskPreset(presets, taskType);
+  const enabledProviders = providers.filter((provider) => provider.enabled);
+  const providerPool = enabledProviders.length ? enabledProviders : providers;
+  const presetProvider = preset?.providerId ? providerPool.find((provider) => provider.id === preset.providerId) : undefined;
+  const taskDefaultProvider = providerPool.find((provider) => (provider.defaultTaskTypes ?? []).includes(taskType));
+  const selectedProvider = providerPool.find((provider) => provider.id === selectedProviderId);
+  const provider = presetProvider ?? taskDefaultProvider ?? selectedProvider ?? providerPool[0];
+  if (!provider) return { preset };
+  return {
+    preset,
+    provider: preset?.modelOverride ? { ...provider, defaultModel: preset.modelOverride } : provider
+  };
 }
 
 export function buildPresetMessages(preset: AIPreset, variables: Record<string, unknown>): ChatMessage[] {
@@ -27,4 +52,3 @@ function stringifyVariable(value: unknown): string {
   if (typeof value === "string") return value;
   return JSON.stringify(value, null, 2);
 }
-

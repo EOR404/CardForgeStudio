@@ -307,6 +307,10 @@ pre {
   margin-bottom: 12px;
 }
 
+.import-preview {
+  margin-bottom: 14px;
+}
+
 .panel-title {
   display: flex;
   align-items: center;
@@ -407,6 +411,11 @@ pre {
 
 .muted {
   color: var(--muted);
+  font-size: 13px;
+}
+
+.field-error {
+  color: var(--danger);
   font-size: 13px;
 }
 
@@ -587,11 +596,31 @@ pre {
   gap: 12px;
 }
 
+.asset-grid.compact {
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+}
+
 .asset-tile {
   border: 1px solid var(--line);
   background: #fff;
   border-radius: 8px;
   overflow: hidden;
+}
+
+.asset-tile.selectable {
+  cursor: pointer;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+
+.asset-tile.selectable input {
+  justify-self: start;
+}
+
+.asset-tile.selectable span {
+  display: grid;
+  gap: 3px;
 }
 
 .asset-tile.active {

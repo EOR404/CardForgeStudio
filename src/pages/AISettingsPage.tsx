@@ -16,6 +16,36 @@ const CAPABILITY_OPTIONS: Array<{ id: AICapability; label: string }> = [
   { id: "streaming", label: "streaming" }
 ];
 
+const PROVIDER_TYPE_OPTIONS: Array<{ id: AIProviderConfig["providerType"]; label: string }> = [
+  { id: "openai-compatible", label: "OpenAI-compatible" },
+  { id: "openai", label: "OpenAI" },
+  { id: "deepseek", label: "DeepSeek" },
+  { id: "anthropic", label: "Anthropic" },
+  { id: "gemini", label: "Gemini" },
+  { id: "ollama", label: "Ollama" },
+  { id: "lm-studio", label: "LM Studio" },
+  { id: "vllm", label: "vLLM" },
+  { id: "comfyui", label: "ComfyUI" },
+  { id: "stable-diffusion-webui", label: "Stable Diffusion WebUI" },
+  { id: "custom", label: "Custom HTTP API" }
+];
+
+const TASK_TYPE_OPTIONS = [
+  { id: "generateCharacter", label: "角色生成" },
+  { id: "rewriteField", label: "字段改写" },
+  { id: "worldBookSuggest", label: "世界书建议" },
+  { id: "validateCard", label: "角色质检" },
+  { id: "testChat", label: "测试聊天" },
+  { id: "diagnoseTest", label: "测试诊断" },
+  { id: "jsonRepair", label: "JSON 修复" },
+  { id: "formatConversion", label: "格式转换" },
+  { id: "imagePrompt", label: "图片 Prompt" },
+  { id: "imageGeneration", label: "图片生成" },
+  { id: "imageUnderstanding", label: "图片理解" },
+  { id: "variableUpdate", label: "变量更新" },
+  { id: "custom", label: "自定义" }
+];
+
 export function AISettingsPage() {
   const state = useAppStore();
   const project = getCurrentProject(state);
@@ -46,6 +76,14 @@ export function AISettingsPage() {
     if (enabled) capabilities.add(capability);
     else capabilities.delete(capability);
     updateProvider({ capabilities: [...capabilities] });
+  }
+
+  function toggleDefaultTask(taskType: string, enabled: boolean) {
+    if (!provider) return;
+    const taskTypes = new Set(provider.defaultTaskTypes ?? []);
+    if (enabled) taskTypes.add(taskType);
+    else taskTypes.delete(taskType);
+    updateProvider({ defaultTaskTypes: [...taskTypes] });
   }
 
   function updatePreset(patch: Partial<AIPreset>) {
@@ -146,13 +184,11 @@ export function AISettingsPage() {
                 <label>
                   type
                   <select value={provider.providerType} onChange={(event) => updateProvider({ providerType: event.target.value as AIProviderConfig["providerType"] })}>
-                    <option value="openai-compatible">OpenAI-compatible</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="deepseek">DeepSeek</option>
-                    <option value="anthropic">Anthropic</option>
-                    <option value="gemini">Gemini</option>
-                    <option value="ollama">Ollama</option>
-                    <option value="custom">Custom</option>
+                    {PROVIDER_TYPE_OPTIONS.map((option) => (
+                      <option value={option.id} key={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
                 </label>
               </div>
@@ -160,6 +196,17 @@ export function AISettingsPage() {
                 baseUrl
                 <input value={provider.baseUrl} onChange={(event) => updateProvider({ baseUrl: event.target.value })} />
               </label>
+              <label>
+                proxy / relay URL
+                <input
+                  value={provider.proxyUrl ?? ""}
+                  onChange={(event) => updateProvider({ proxyUrl: event.target.value })}
+                  placeholder="https://your-relay.example.com/ai-proxy"
+                />
+              </label>
+              <p className="muted">
+                转发端点会接收 endpoint、headers、body、providerType 并代发请求；留空则直接请求 Base URL。
+              </p>
               <div className="form-row">
                 <label>
                   apiKey
@@ -222,6 +269,29 @@ export function AISettingsPage() {
                   placeholder="gpt-4o-mini&#10;gpt-4o"
                 />
               </label>
+              <section className="panel compact">
+                <div className="panel-title">默认任务类型</div>
+                <div className="capability-grid">
+                  {TASK_TYPE_OPTIONS.filter((task) => task.id !== "custom").map((task) => (
+                    <label className="check-field" key={task.id}>
+                      <input
+                        type="checkbox"
+                        checked={(provider.defaultTaskTypes ?? []).includes(task.id)}
+                        onChange={(event) => toggleDefaultTask(task.id, event.target.checked)}
+                      />
+                      <span>{task.label}</span>
+                    </label>
+                  ))}
+                </div>
+                <label>
+                  taskType list
+                  <textarea
+                    value={listToText(provider.defaultTaskTypes ?? [])}
+                    onChange={(event) => updateProvider({ defaultTaskTypes: parseList(event.target.value) })}
+                    placeholder="generateCharacter&#10;testChat&#10;customTask"
+                  />
+                </label>
+              </section>
               <label>
                 headers
                 <textarea
@@ -359,13 +429,11 @@ export function AISettingsPage() {
                           <label>
                             taskType
                             <select value={selectedPreset.taskType} onChange={(event) => updatePreset({ taskType: event.target.value })}>
-                              <option value="generateCharacter">generateCharacter</option>
-                              <option value="rewriteField">rewriteField</option>
-                              <option value="worldBookSuggest">worldBookSuggest</option>
-                              <option value="validateCard">validateCard</option>
-                              <option value="testChat">testChat</option>
-                              <option value="diagnoseTest">diagnoseTest</option>
-                              <option value="custom">custom</option>
+                              {TASK_TYPE_OPTIONS.map((task) => (
+                                <option value={task.id} key={task.id}>
+                                  {task.id} / {task.label}
+                                </option>
+                              ))}
                             </select>
                           </label>
                         </div>
@@ -508,10 +576,10 @@ function listToText(items: string[]): string {
 }
 
 function parseList(text: string): string[] {
-  return text
+  return Array.from(new Set(text
     .split(/[\n,]/g)
     .map((item) => item.trim())
-    .filter(Boolean);
+    .filter(Boolean)));
 }
 
 function headersToText(headers: Record<string, string>): string {

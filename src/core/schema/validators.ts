@@ -51,12 +51,26 @@ export const internalCharacterSchema = z.object({
 export const aiProviderSchema = z.object({
   id: z.string(),
   name: z.string().min(1, "Provider 名称不能为空"),
-  providerType: z.enum(["openai-compatible", "openai", "deepseek", "anthropic", "gemini", "ollama", "custom"]),
+  providerType: z.enum([
+    "openai-compatible",
+    "openai",
+    "deepseek",
+    "anthropic",
+    "gemini",
+    "ollama",
+    "lm-studio",
+    "vllm",
+    "comfyui",
+    "stable-diffusion-webui",
+    "custom"
+  ]),
   baseUrl: z.string().min(1, "Base URL 不能为空"),
+  proxyUrl: z.string().optional(),
   apiKey: z.string().optional(),
   defaultModel: z.string().min(1, "模型名不能为空"),
   models: z.array(z.string()).optional(),
   headers: z.record(z.string()).optional(),
+  defaultTaskTypes: z.array(z.string()).optional(),
   defaultParams: z.object({
     temperature: z.number().optional(),
     topP: z.number().optional(),

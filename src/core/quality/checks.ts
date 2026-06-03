@@ -4,6 +4,18 @@ import { uid } from "../schema/defaults";
 import { estimateTokens } from "../token/estimate";
 
 const BROAD_WORLD_BOOK_KEYS = new Set(["你", "我", "他", "她", "它", "的", "是", "在", "了", "和", "不", "人", "门"]);
+const OOC_PATTERN = /\b(ooc|out\s*of\s*character|jailbreak|ignore\s+previous|developer\s+message)\b|越狱|开发者指令|系统提示|作为\s*(ai|AI|模型)|我是\s*(ai|AI|模型)|脱离角色|角色外/i;
+
+export type CharacterTokenSection = {
+  id: string;
+  label: string;
+  tokens: number;
+};
+
+export type CharacterTokenBreakdown = {
+  sections: CharacterTokenSection[];
+  total: number;
+};
 
 export function checkCharacterQuality(character: InternalCharacter, worldBook?: InternalWorldBook): QualityIssue[] {
   const issues: QualityIssue[] = [];
@@ -15,11 +27,64 @@ export function checkCharacterQuality(character: InternalCharacter, worldBook?: 
   if (/(你|{{user}}).{0,10}(说|决定|走|看|想|伸手|吻|拥抱)/i.test(character.firstMessage)) {
     issues.push(issue("warning", "character.first_mes", "first_mes 可能替 {{user}} 行动。"));
   }
+  if (hasHighTextOverlap(character.description, character.personality ?? "")) {
+    issues.push(issue("info", "character.personality", "personality 与 description 重复度较高，建议拆分人格特征和背景描写。"));
+  }
+  if (character.exampleMessages?.trim()) {
+    if (!/<START>/i.test(character.exampleMessages)) {
+      issues.push(issue("warning", "character.mes_example", "mes_example 缺少 <START> 分隔标记。"));
+    }
+    if (!/\{\{char\}\}|<char>|char\s*:/i.test(character.exampleMessages)) {
+      issues.push(issue("warning", "character.mes_example", "mes_example 没有明显的 {{char}} 发言标记。"));
+    }
+  }
+  const oocScopes = [
+    ["description", character.description],
+    ["personality", character.personality ?? ""],
+    ["scenario", character.scenario ?? ""],
+    ["first_mes", character.firstMessage],
+    ["mes_example", character.exampleMessages ?? ""],
+    ["system_prompt", character.systemPrompt ?? ""],
+    ["post_history_instructions", character.postHistoryInstructions ?? ""]
+  ];
+  for (const [field, content] of oocScopes) {
+    if (OOC_PATTERN.test(content)) issues.push(issue("warning", `character.${field}`, `${field} 可能混入 OOC、越狱或模型身份指令。`));
+  }
+  const tokenBreakdown = buildCharacterTokenBreakdown(character, worldBook);
+  if (tokenBreakdown.total > 3500) {
+    issues.push(issue("warning", "character.tokens", `角色卡本体约 ${tokenBreakdown.total} tokens，建议压缩或拆到世界书。`));
+  }
+  const exampleTokens = tokenBreakdown.sections.find((section) => section.id === "exampleMessages")?.tokens ?? 0;
+  if (exampleTokens > 900) issues.push(issue("info", "character.mes_example", "mes_example token 占用较高，可保留少量代表性样例。"));
   if (character.description.length > 6000) {
     issues.push(issue("warning", "character.description", "description 很长，建议拆分到世界书。"));
   }
   getV1LossWarnings(character).forEach((warning) => issues.push(issue("info", "export.v1", `导出 V1 时：${warning}`)));
   return issues;
+}
+
+export function buildCharacterTokenBreakdown(character: InternalCharacter, worldBook?: InternalWorldBook): CharacterTokenBreakdown {
+  const sections: CharacterTokenSection[] = [
+    { id: "description", label: "description", tokens: estimateTokens(character.description) },
+    { id: "personality", label: "personality", tokens: estimateTokens(character.personality ?? "") },
+    { id: "scenario", label: "scenario", tokens: estimateTokens(character.scenario ?? "") },
+    { id: "firstMessage", label: "first_mes", tokens: estimateTokens(character.firstMessage) },
+    { id: "exampleMessages", label: "mes_example", tokens: estimateTokens(character.exampleMessages ?? "") },
+    { id: "systemPrompt", label: "system_prompt", tokens: estimateTokens(character.systemPrompt ?? "") },
+    { id: "postHistoryInstructions", label: "post_history_instructions", tokens: estimateTokens(character.postHistoryInstructions ?? "") },
+    { id: "alternateGreetings", label: "alternate_greetings", tokens: estimateTokens(character.alternateGreetings.join("\n")) }
+  ];
+  if (worldBook) {
+    sections.push({
+      id: "linkedWorldBook",
+      label: "linked_worldbook",
+      tokens: worldBook.entries.reduce((sum, entry) => sum + estimateTokens(entry.content), 0)
+    });
+  }
+  return {
+    sections,
+    total: sections.reduce((sum, section) => sum + section.tokens, 0)
+  };
 }
 
 export function checkWorldBookQuality(worldBook: InternalWorldBook): QualityIssue[] {
@@ -102,4 +167,31 @@ function issue(level: QualityIssue["level"], scope: string, message: string): Qu
 
 function normalizeWorldBookKey(key: string): string {
   return key.trim().toLowerCase();
+}
+
+function hasHighTextOverlap(left: string, right: string): boolean {
+  const leftTerms = textTerms(left);
+  const rightTerms = textTerms(right);
+  if (leftTerms.size < 10 || rightTerms.size < 10) return false;
+  let shared = 0;
+  for (const term of leftTerms) {
+    if (rightTerms.has(term)) shared += 1;
+  }
+  const smaller = Math.min(leftTerms.size, rightTerms.size);
+  return shared / smaller >= 0.72;
+}
+
+function textTerms(value: string): Set<string> {
+  const compact = value
+    .toLowerCase()
+    .replace(/\{\{user\}\}|\{\{char\}\}/g, " ")
+    .replace(/[^\p{Script=Han}\p{L}\p{N}]+/gu, " ")
+    .trim();
+  const latinTerms = compact.split(/\s+/).filter((term) => term.length >= 3);
+  const cjk = [...compact.replace(/[^\p{Script=Han}]/gu, "")];
+  const cjkTerms: string[] = [];
+  for (let index = 0; index < cjk.length - 1; index += 1) {
+    cjkTerms.push(`${cjk[index]}${cjk[index + 1]}`);
+  }
+  return new Set([...latinTerms, ...cjkTerms]);
 }
