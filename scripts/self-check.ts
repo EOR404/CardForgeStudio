@@ -15,12 +15,14 @@ import {
   createWorldBookEntryDraft
 } from "../src/core/schema/defaults";
 import { aiProviderSchema } from "../src/core/schema/validators";
+import { importFrontendPackageFromFiles, importRegexRulesFromConfig, importScriptFile, importScriptsFromConfig } from "../src/core/importer/advanced";
 import { importCharacterJson, importWorldBookJson } from "../src/core/importer/character";
 import { getV2PngBatchImageWarnings } from "../src/core/exporter/batch";
 import { createExportRecord, getV1LossWarnings, toV1Character, toV2Character, toV3Character, toWorldBookJson } from "../src/core/exporter/character";
-import { buildExportPreflightReport, formatExportReportMarkdown } from "../src/core/exporter/report";
+import { buildExportPreflightReport, exportTargets, formatExportReportMarkdown, targetLabel } from "../src/core/exporter/report";
 import { embedV2MetadataInPngDataUrl, extractCharacterFromPngDataUrl } from "../src/core/exporter/pngMetadata";
 import { analyzeWorldBookTrigger, triggerWorldBookEntries } from "../src/core/worldbook/trigger";
+import { extractWorldBookEntriesFromText, splitWorldBookText } from "../src/core/worldbook/textImport";
 import { runRegexPipeline, runRegexRule } from "../src/core/regex/regex";
 import { createProjectDuplicate } from "../src/core/project/duplicate";
 import { exportProjectPackage, importProjectPackage } from "../src/core/project/package";
@@ -39,11 +41,18 @@ import { buildABComparisonReport } from "../src/core/tester/ab";
 import { builtInTestCases, evaluateBuiltInTestCase } from "../src/core/tester/cases";
 import { isPluginRunnableInCurrentVersion, normalizePluginManifest, pluginSafetyIssues } from "../src/core/plugin-runtime/manifest";
 import { isScriptRunnableInCurrentVersion, scriptSafetyIssues } from "../src/core/script-runtime/safety";
-import { applyVariableDiffs, diffVariables, getPathValue, parseMvuSetCommands, previewVariableDiffs } from "../src/core/variable-system/mvu";
+import { applyVariableDiffs, diffVariables, getPathValue, parseMvuSetCommands, parseStateBlock, parseVariableUpdateCommands, previewVariableDiffs } from "../src/core/variable-system/mvu";
 import { categoryLabel, classifyWorldBookEntry } from "../src/core/worldbook/classify";
 import { normalizeWorldBookEntryCandidate } from "../src/core/worldbook/normalize";
 import { buildCharacterTokenBreakdown, checkCharacterQuality, checkWorldBookQuality } from "../src/core/quality/checks";
 import { sanitizeSensitiveHeaders, sensitiveHeaderKeys } from "../src/core/security/sensitive";
+import {
+  canEnableFrontendScripts,
+  canEnableManagedRuntime,
+  projectTrustLevels,
+  trustLevelDescription,
+  trustLevelLabel
+} from "../src/core/security/trust";
 import { getCurrentProject, useAppStore } from "../src/stores/useAppStore";
 import { BrowserStorage } from "../src/storage/BrowserStorage";
 import type { Asset, TestSession } from "../src/core/schema/types";
@@ -62,6 +71,20 @@ character.extensions = { selfCheck: { preserved: true } };
 const defaultProject = createProjectDraft("默认项目自检", "light");
 const defaultCharacter = defaultProject.characters[0];
 const defaultWorldBook = defaultProject.worldBooks[0];
+assert.equal(defaultProject.compatibilityTarget, "sillytavern_v2");
+assert.equal(defaultProject.trustLevel, "untrusted");
+assert.ok(exportTargets.includes(defaultProject.compatibilityTarget));
+assert.ok(projectTrustLevels.includes(defaultProject.trustLevel));
+assert.equal(trustLevelLabel("restricted"), "受限信任");
+assert.ok(trustLevelDescription("untrusted").includes("禁止"));
+assert.equal(canEnableFrontendScripts("untrusted"), false);
+assert.equal(canEnableFrontendScripts("restricted"), true);
+assert.equal(canEnableManagedRuntime("restricted"), false);
+assert.equal(canEnableManagedRuntime("trusted"), true);
+assert.equal(targetLabel("sillytavern_mvu"), "SillyTavern + MVU");
+const nativeTargetProject = createProjectDraft("原生目标自检", "advanced", "cardforge_native", "trusted");
+assert.equal(nativeTargetProject.compatibilityTarget, "cardforge_native");
+assert.equal(nativeTargetProject.trustLevel, "trusted");
 assert.ok(defaultCharacter.description.trim());
 assert.ok(defaultCharacter.firstMessage.trim());
 assert.ok(defaultCharacter.linkedWorldBooks.includes(defaultWorldBook.id));
@@ -275,6 +298,8 @@ const comparisonReport = buildABComparisonReport({
     id: "project_compare_self_check",
     name: "Compare Self Check",
     mode: "advanced",
+    trustLevel: "untrusted",
+    compatibilityTarget: "sillytavern_mvu",
     characters: [changedCharacter],
     worldBooks: [worldBook],
     assets: [],
@@ -316,6 +341,15 @@ const versionedExportRecord = createExportRecord({
   warnings: []
 });
 assert.equal(versionedExportRecord.characterVersionId, "version_self_check");
+const avatarExportRecord = createExportRecord({
+  characterId: character.id,
+  worldBookIds: [],
+  assetIds: ["asset_self_check_cover"],
+  format: "avatar_png",
+  outputPath: "lia.avatar.png",
+  warnings: []
+});
+assert.equal(avatarExportRecord.format, "avatar_png");
 
 const exportedWorldBook = toWorldBookJson(worldBook);
 const exportedWorldBookEntries = (exportedWorldBook as { entries: Array<{ extensions?: { cardforge?: { category?: string } } }> }).entries;
@@ -353,6 +387,22 @@ const normalizedWorldBookEntry = normalizeWorldBookEntryCandidate({
   category: "location"
 });
 assert.equal(normalizedWorldBookEntry.category, "location");
+const localTextSource =
+  "# 雾城\n雾城被灰雾包围，钟塔每日三次敲响净雾钟。\n\n# 失灯者\n失灯者会避开钟声，不能在净雾钟响起时穿过广场。";
+const localTextChunks = splitWorldBookText(localTextSource);
+assert.equal(localTextChunks.length, 2);
+const localTextEntries = extractWorldBookEntriesFromText(localTextSource, { sourceName: "fog-city.md" });
+assert.equal(localTextEntries.length, 2);
+assert.equal(localTextEntries[0].name, "雾城");
+assert.ok(localTextEntries[0].keys.includes("雾城"));
+assert.ok(localTextEntries[1].keys.includes("失灯者"));
+assert.equal(
+  localTextEntries[0].extensions?.cardforge && (localTextEntries[0].extensions.cardforge as { sourceName?: string }).sourceName,
+  "fog-city.md"
+);
+const localTextBook = createWorldBookDraft("本地文本拆分世界书");
+localTextBook.entries = localTextEntries;
+assert.equal(triggerWorldBookEntries(localTextBook, "我抵达雾城。").length, 1);
 
 const triggers = triggerWorldBookEntries(worldBook, "我想寻找月草。");
 assert.equal(triggers.length, 2);
@@ -434,6 +484,61 @@ assert.ok(worldBookIssues.some((item) => item.message.includes("过宽")));
 assert.ok(worldBookIssues.some((item) => item.message.includes("重复")));
 assert.ok(worldBookIssues.some((item) => item.message.includes("insertion_order")));
 assert.ok(worldBookIssues.some((item) => item.message.includes("probability")));
+const importedRegexRules = importRegexRulesFromConfig(
+  {
+    rules: [
+      {
+        name: "导入月草替换",
+        findRegex: "月草",
+        replaceString: "月光草",
+        target: "before_prompt",
+        flags: "ggim",
+        tags: "imported, prompt"
+      }
+    ]
+  },
+  "regex-rules.json"
+);
+assert.equal(importedRegexRules.length, 1);
+assert.equal(importedRegexRules[0].pattern, "月草");
+assert.equal(importedRegexRules[0].replacement, "月光草");
+assert.equal(importedRegexRules[0].target, "before_prompt");
+assert.equal(importedRegexRules[0].flags, "gim");
+assert.deepEqual(importedRegexRules[0].tags, ["imported", "prompt"]);
+const importedScripts = importScriptsFromConfig(
+  {
+    scripts: [
+      {
+        name: "开局变量脚本",
+        language: "stscript",
+        source: "/setvar key=moonHerb active",
+        trigger: "on_card_init",
+        enabled: true,
+        permissions: ["variable.write"]
+      }
+    ]
+  },
+  "scripts.json"
+);
+assert.equal(importedScripts.length, 1);
+assert.equal(importedScripts[0].enabled, false);
+assert.equal(importedScripts[0].trigger, "on_card_init");
+assert.deepEqual(importedScripts[0].permissions, ["variable.write"]);
+const importedPlainScript = importScriptFile("console.log('preview only')", "main.js");
+assert.equal(importedPlainScript[0].language, "javascript");
+assert.equal(importedPlainScript[0].enabled, false);
+const importedFrontendPackage = importFrontendPackageFromFiles([
+  { name: "index.html", text: "<main><button>开始</button></main>" },
+  { name: "style.css", text: "button{color:red}" },
+  { name: "main.js", text: "document.body.dataset.ready='1'" },
+  { name: "manifest.json", text: JSON.stringify({ name: "导入前端卡", permissions: ["ui.render"] }) }
+]);
+assert.equal(importedFrontendPackage.name, "导入前端卡");
+assert.ok(importedFrontendPackage.html.includes("<button>"));
+assert.ok(importedFrontendPackage.css.includes("color:red"));
+assert.ok(importedFrontendPackage.js.includes("dataset.ready"));
+assert.equal(importedFrontendPackage.allowScripts, false);
+assert.deepEqual(importedFrontendPackage.manifest.permissions, ["ui.render"]);
 const promptBuild = buildTestPrompt(character, worldBook, [{ role: "assistant", content: "你需要哪种药？" }], "我想寻找月草。");
 assert.ok(promptBuild.prompt.includes("World Info:"));
 assert.ok(promptBuild.promptSections.some((section) => section.source === "worldbook" && section.enabled && section.tokens > 0));
@@ -739,9 +844,10 @@ const unsafeScript = createScriptDraft({
   enabled: true,
   permissions: ["project.read", "shell.execute", "apiKey.read"]
 });
-const unsafeIssues = scriptSafetyIssues(unsafeScript);
+const unsafeIssues = scriptSafetyIssues(unsafeScript, "untrusted");
 assert.ok(unsafeIssues.some((issue) => issue.message.includes("shell.execute")));
 assert.ok(unsafeIssues.some((issue) => issue.message.includes("apiKey.read")));
+assert.ok(unsafeIssues.some((issue) => issue.message.includes("不信任")));
 
 const defaultPlugin = createPluginDraft();
 assert.equal(defaultPlugin.enabled, false);
@@ -758,6 +864,7 @@ const pluginIssues = pluginSafetyIssues(importedPlugin);
 assert.ok(pluginIssues.some((issue) => issue.message.includes("apiKey.read")));
 assert.ok(pluginIssues.some((issue) => issue.message.includes("network.fullAccess")));
 assert.ok(pluginIssues.some((issue) => issue.message.includes("未受信任")));
+assert.ok(pluginSafetyIssues(importedPlugin, "restricted").some((issue) => issue.message.includes("受限信任")));
 
 const variableState = { relationships: { lia: { affection: 20 } }, player: { hp: 100 } };
 const variableCommands = parseMvuSetCommands("_.set('relationships.lia.affection', 24); _.assign('player.hp', 92)");
@@ -767,6 +874,18 @@ const appliedVariables = applyVariableDiffs(variableState, variableCommands);
 assert.equal(getPathValue(appliedVariables.state, "relationships.lia.affection"), 24);
 assert.equal(getPathValue(appliedVariables.state, "player.hp"), 92);
 assert.ok(diffVariables(variableState, appliedVariables.state).some((diff) => diff.path === "relationships.lia.affection"));
+const jsonPatchCommands = parseVariableUpdateCommands(
+  '[{"op":"replace","path":"/relationships/lia/affection","value":32},{"op":"remove","path":"/player/hp"}]',
+  variableState
+);
+assert.equal(jsonPatchCommands.length, 2);
+const jsonPatchApplied = applyVariableDiffs(variableState, jsonPatchCommands);
+assert.equal(getPathValue(jsonPatchApplied.state, "relationships.lia.affection"), 32);
+assert.equal(getPathValue(jsonPatchApplied.state, "player.hp"), undefined);
+const yamlState = parseStateBlock("relationships:\n  lia:\n    affection: 41\nplayer:\n  hp: 88");
+assert.equal(getPathValue(yamlState, "relationships.lia.affection"), 41);
+const yamlDiffs = parseVariableUpdateCommands("```yaml\nrelationships:\n  lia:\n    affection: 41\nplayer:\n  hp: 88\n```", variableState);
+assert.ok(yamlDiffs.some((diff) => diff.path === "relationships.lia.affection" && diff.after === 41));
 const packagedVersions = [
   {
     id: "version_packaged_character",
@@ -819,6 +938,8 @@ const packaged = exportProjectPackage({
   id: "project_self_check",
   name: "Self Check Project",
   mode: "light",
+  trustLevel: "restricted",
+  compatibilityTarget: "sillytavern_regex",
   characters: [character],
   worldBooks: [worldBook],
   assets: [coverAsset],
@@ -848,8 +969,10 @@ assert.ok(Object.keys(packagedFiles).some((path) => path.startsWith("versions/pr
 assert.ok(Object.keys(packagedFiles).some((path) => path.endsWith("/assets/assets.json") && path.startsWith("frontend/")));
 assert.ok(Object.keys(packagedFiles).some((path) => path.endsWith("/assets/lia-cover.png")));
 const packagedProjectJson = new TextDecoder().decode(packagedFiles["project.json"]);
-const packagedProjectData = JSON.parse(packagedProjectJson) as { mode?: string };
+const packagedProjectData = JSON.parse(packagedProjectJson) as { mode?: string; trustLevel?: string; compatibilityTarget?: string };
 assert.equal(packagedProjectData.mode, "light");
+assert.equal(packagedProjectData.trustLevel, "restricted");
+assert.equal(packagedProjectData.compatibilityTarget, "sillytavern_regex");
 assert.ok(!packagedProjectJson.includes("sk-self-check-secret"));
 assert.ok(!packagedProjectJson.includes("sk-header-secret"));
 assert.ok(!packagedProjectJson.includes("sk-header-api-secret"));
@@ -859,6 +982,8 @@ assert.ok(!packagedProjectJson.includes("sk-snapshot-header-secret"));
 assert.ok(packagedProjectJson.includes("X-Self-Check"));
 const unpacked = importProjectPackage(packaged);
 assert.equal(unpacked.name, "Self Check Project");
+assert.equal(unpacked.trustLevel, "restricted");
+assert.equal(unpacked.compatibilityTarget, "sillytavern_regex");
 assert.equal(unpacked.aiProviders[0].apiKey, "");
 assert.equal(unpacked.aiProviders[0].headers?.["X-Self-Check"], "ok");
 assert.equal(unpacked.aiProviders[0].headers?.Authorization, "");
@@ -882,6 +1007,25 @@ const exportReport = buildExportPreflightReport({
 });
 assert.equal(exportReport.summary.dependencies >= 2, true);
 assert.ok(formatExportReportMarkdown(exportReport).includes("依赖说明"));
+const untrustedSecurityReport = buildExportPreflightReport({
+  project: {
+    ...unpacked,
+    trustLevel: "untrusted",
+    advanced: {
+      ...unpacked.advanced,
+      scripts: [unsafeScript],
+      frontendPackages: [createFrontendPackageDraft({ name: "不信任前端", allowScripts: true })],
+      plugins: [importedPlugin]
+    }
+  },
+  format: "v2_json",
+  target: "sillytavern_v2",
+  character,
+  worldBook
+});
+assert.ok(untrustedSecurityReport.checks.some((item) => item.message.includes("不信任项目不能启用脚本")));
+assert.ok(untrustedSecurityReport.checks.some((item) => item.message.includes("不信任项目不会运行前端卡 JS")));
+assert.ok(untrustedSecurityReport.checks.some((item) => item.message.includes("不信任项目不能启用插件")));
 const v1PreflightReport = buildExportPreflightReport({
   project: unpacked,
   format: "v1_json",
@@ -914,6 +1058,30 @@ const jpegPngReport = buildExportPreflightReport({
   imageAsset: jpegCoverAsset
 });
 assert.ok(jpegPngReport.checks.some((item) => item.id === "image-not-png" && item.level === "blocker"));
+const avatarPngReport = buildExportPreflightReport({
+  project: unpacked,
+  format: "avatar_png",
+  target: "sillytavern_v2",
+  character,
+  imageAsset: coverAsset
+});
+assert.equal(avatarPngReport.summary.blockers, 0);
+assert.ok(avatarPngReport.dependencies.some((item) => item.type === "asset" && item.status === "included"));
+const missingAvatarPngReport = buildExportPreflightReport({
+  project: unpacked,
+  format: "avatar_png",
+  target: "sillytavern_v2",
+  character
+});
+assert.ok(missingAvatarPngReport.checks.some((item) => item.id === "missing-png-image" && item.level === "blocker"));
+const jpegAvatarPngReport = buildExportPreflightReport({
+  project: unpacked,
+  format: "avatar_png",
+  target: "sillytavern_v2",
+  character,
+  imageAsset: jpegCoverAsset
+});
+assert.ok(jpegAvatarPngReport.checks.some((item) => item.id === "image-not-png" && item.message.includes("头像 PNG")));
 assert.deepEqual(getV2PngBatchImageWarnings([coverAsset]), []);
 assert.ok(getV2PngBatchImageWarnings([jpegCoverAsset]).some((warning) => warning.includes("不是 PNG")));
 assert.ok(getV2PngBatchImageWarnings([{ ...coverAsset, dataUrl: undefined }]).some((warning) => warning.includes("缺少 dataUrl")));
@@ -1009,7 +1177,12 @@ assert.equal(selectedFallbackRoute.provider?.id, routeProviderB.id);
 assert.equal(exampleProjects.length, 8);
 for (const example of exampleProjects) {
   const project = example.create();
+  assert.ok(example.guideMarkdown.includes(`# ${example.name}`));
+  assert.ok(example.guideMarkdown.includes("## 操作路径"));
+  assert.ok(example.guideMarkdown.includes("## 验收点"));
+  assert.ok(example.guideMarkdown.length > 180);
   assert.ok(project.name.length > 0);
+  assert.equal(project.name, example.name);
   assert.ok(project.characters.length + project.worldBooks.length + project.advanced.plugins.length > 0);
 }
 

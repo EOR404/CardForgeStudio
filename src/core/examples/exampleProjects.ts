@@ -13,6 +13,7 @@ export type ExampleProjectDefinition = {
   id: string;
   name: string;
   description: string;
+  guideMarkdown: string;
   create: () => CardProject;
 };
 
@@ -24,51 +25,154 @@ export const exampleProjects: ExampleProjectDefinition[] = [
     id: "light-character",
     name: "轻量角色卡示例",
     description: "单角色、头像、V2 导出和轻量试聊的最短路径。",
+    guideMarkdown: guide(
+      "轻量角色卡示例",
+      "适合第一次打开 CardForge Studio 的轻量制卡用户。",
+      [
+        "从示例创建项目后进入角色卡页，查看林溪的基础字段、备用开场白和 V2 JSON 预览。",
+        "进入资源页，确认示例头像已经关联到角色，并可重新标记为导出封面。",
+        "进入测试页发送一轮消息，观察 Prompt 预览和触发日志。",
+        "进入导出页选择 V2 JSON 或 V2 PNG，确认发布前检查后导出。"
+      ],
+      ["项目处于轻量制卡模式。", "至少包含 1 个角色和 1 张图片资源。", "适合验证从制卡到导出的最短闭环。"]
+    ),
     create: createLightCharacterExample
   },
   {
     id: "worldbook-driven",
     name: "世界书驱动卡示例",
     description: "角色主字段保持简洁，核心设定拆入世界书条目。",
+    guideMarkdown: guide(
+      "世界书驱动卡示例",
+      "适合学习把背景、组织、规则拆入世界书的作者。",
+      [
+        "从示例创建项目后进入世界书页，查看雾城、失灯者和巡夜规则条目。",
+        "在触发测试中输入“我在雾城遇见失灯者”，观察关键词命中和常驻条目。",
+        "返回角色卡页，确认角色主字段保持精炼，世界书通过 linkedWorldBooks 绑定。",
+        "在导出页选择嵌入世界书，生成 V2 JSON 并检查 character_book。"
+      ],
+      ["包含 1 个角色和 1 个世界书。", "世界书条目带分类、关键词、常驻规则和插入顺序。", "适合验证世界书驱动卡流程。"]
+    ),
     create: createWorldBookDrivenExample
   },
   {
     id: "mvu-variable",
     name: "MVU 变量卡示例",
     description: "预置变量树和 MVU 命令识别样例。",
+    guideMarkdown: guide(
+      "MVU 变量卡示例",
+      "适合调试变量树、状态更新和变量驱动世界书的重型卡作者。",
+      [
+        "从示例创建项目后进入高级页的 Variable Lab，查看 player、characters、quests 状态树。",
+        "粘贴 _.set('quests.lostLamp.clueCount', 1) 或 JSON Patch，预览变量 diff。",
+        "进入世界书页查看变量更新示例条目，并尝试输入“线索”。",
+        "在测试页查看变量状态如何进入 Prompt 链路。"
+      ],
+      ["项目处于高级工程模式。", "角色绑定默认变量系统。", "适合验证 MVU / JSON Patch / 状态块解析入口。"]
+    ),
     create: createMvuExample
   },
   {
     id: "regex-lab",
     name: "Regex 调试示例",
     description: "展示正则流水线、替用户行动标记和输出替换。",
+    guideMarkdown: guide(
+      "Regex 调试示例",
+      "适合检查 AI 输出替换、变量提取和正则执行顺序。",
+      [
+        "从示例创建项目后进入高级页的 Regex Lab。",
+        "在测试文本中输入“{{user}}决定打开门”，观察替用户行动标记。",
+        "切换到 MVU 提取规则，测试 _.set(...) 文本如何被标记。",
+        "在导出页选择不同兼容目标，查看标准 V2 对正则依赖的警告。"
+      ],
+      ["包含至少 2 条正则规则。", "规则带 target、order 和 replacement。", "适合验证 Regex Lab 流水线。"]
+    ),
     create: createRegexExample
   },
   {
     id: "frontend-init",
     name: "前端初始化卡示例",
     description: "包含 HTML/CSS/JS 片段，默认受限 iframe 预览。",
+    guideMarkdown: guide(
+      "前端初始化卡示例",
+      "适合查看前端卡 HTML/CSS/JS 的安全预览方式。",
+      [
+        "从示例创建项目后进入高级页的 Frontend Sandbox。",
+        "查看状态面板初始化页的 HTML、CSS 和默认禁用的 JS。",
+        "打开沙盒预览，观察权限审计、按钮标签和 sandbox 日志。",
+        "需要测试脚本时只在理解风险后手动开启 allowScripts。"
+      ],
+      ["包含 1 个前端卡包。", "角色绑定 frontendPackageId。", "脚本默认不运行，适合验证受限 iframe 预览。"]
+    ),
     create: createFrontendExample
   },
   {
     id: "script-manager",
     name: "脚本管理示例",
     description: "演示 STscript / Quick Reply / JavaScript 的只读管理。",
+    guideMarkdown: guide(
+      "脚本管理示例",
+      "适合整理 STscript、Quick Reply 和外部脚本线索。",
+      [
+        "从示例创建项目后进入高级页的 Script Manager。",
+        "查看开局状态初始化和 Quick Reply 草案的 language、trigger、compatibility。",
+        "确认脚本默认禁用，只做静态管理和安全提示。",
+        "在导出页查看脚本依赖如何进入依赖说明。"
+      ],
+      ["包含多种脚本草案。", "角色通过 linkedScripts 关联脚本。", "适合验证未知脚本默认不执行。"]
+    ),
     create: createScriptExample
   },
   {
     id: "plugin-dev",
     name: "插件开发示例",
     description: "包含插件 manifest、权限和贡献点草案。",
+    guideMarkdown: guide(
+      "插件开发示例",
+      "适合插件开发者了解 manifest、权限和 contributes 草案。",
+      [
+        "从示例创建项目后进入高级页的 Plugin Manager。",
+        "查看 WorldBook Auditor 的 id、version、main、permissions 和 contributes。",
+        "尝试添加危险权限，观察安全审计提示。",
+        "参考 docs/插件开发草案.md 扩展本地插件接口。"
+      ],
+      ["包含 1 个插件 manifest。", "插件默认未受信任且不执行。", "适合验证插件权限审计和文档入口。"]
+    ),
     create: createPluginExample
   },
   {
     id: "multi-project-assets",
     name: "多项目资源库示例",
     description: "多角色、多资源、标签和导出封面选择样例。",
+    guideMarkdown: guide(
+      "多项目资源库示例",
+      "适合学习图片资源、标签、角色关联和导出封面选择。",
+      [
+        "从示例创建项目后进入资源页，查看头像和导出封面资源。",
+        "切换资源详情，观察关联角色、用途标签和使用记录。",
+        "进入导出页，确认图片会按头像、封面和角色关联自动排序。",
+        "可勾选多张图片批量导出 V2 PNG。"
+      ],
+      ["包含多角色和多图片资源。", "图片带用途、标签和角色关联。", "适合验证资源库到导出的图片选择流程。"]
+    ),
     create: createAssetLibraryExample
   }
 ];
+
+function guide(title: string, audience: string, steps: string[], checkpoints: string[]): string {
+  return [
+    `# ${title}`,
+    "",
+    "## 适合",
+    audience,
+    "",
+    "## 操作路径",
+    ...steps.map((step, index) => `${index + 1}. ${step}`),
+    "",
+    "## 验收点",
+    ...checkpoints.map((item) => `- ${item}`)
+  ].join("\n");
+}
 
 function createBase(name: string, description: string, mode: "light" | "advanced" = "advanced"): CardProject {
   const project = createProjectDraft(name, mode);
