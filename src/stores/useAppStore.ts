@@ -18,10 +18,12 @@ import type {
   AIProviderConfig,
   AIPreset,
   CardProject,
+  CompatibilityTarget,
   CustomTestCase,
   ExportRecord,
   InternalCharacter,
   InternalWorldBook,
+  ProjectTrustLevel,
   RegexRule,
   TestSession,
   VersionSnapshot,
@@ -64,7 +66,7 @@ type AppState = {
   pendingAIResult?: PendingAIResult;
   undoStack: HistorySnapshot[];
   redoStack: HistorySnapshot[];
-  createProject: (name: string, mode: "light" | "advanced") => void;
+  createProject: (name: string, mode: "light" | "advanced", compatibilityTarget?: CompatibilityTarget, trustLevel?: ProjectTrustLevel) => void;
   importProject: (project: unknown) => void;
   openProject: (id: string) => void;
   duplicateProject: (id: string) => void;
@@ -122,8 +124,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedProviderId: initial.projects.find((project) => project.id === initial.currentProjectId)?.aiProviders[0]?.id,
   undoStack: [],
   redoStack: [],
-  createProject(name, mode) {
-    const project = createProjectDraft(name, mode);
+  createProject(name, mode, compatibilityTarget, trustLevel) {
+    const project = createProjectDraft(name, mode, compatibilityTarget, trustLevel);
     commit(set, get, {
       projects: [...get().projects, project],
       currentProjectId: project.id,

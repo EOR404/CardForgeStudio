@@ -4,11 +4,13 @@ import type {
   AIPreset,
   CardProject,
   CardScript,
+  CompatibilityTarget,
   CustomTestCase,
   FrontendCardPackage,
   InternalCharacter,
   InternalWorldBook,
   PluginManifest,
+  ProjectTrustLevel,
   RegexRule,
   VariableSystem,
   WorldBookEntry
@@ -382,7 +384,12 @@ export function createPluginDraft(partial: Partial<PluginManifest> = {}): Plugin
   };
 }
 
-export function createProjectDraft(name = "我的 CardForge 项目", mode: "light" | "advanced" = "light"): CardProject {
+export function createProjectDraft(
+  name = "我的 CardForge 项目",
+  mode: "light" | "advanced" = "light",
+  compatibilityTarget: CompatibilityTarget = "sillytavern_v2",
+  trustLevel: ProjectTrustLevel = "untrusted"
+): CardProject {
   const time = now();
   const character = createCharacterDraft("示例角色");
   const worldBook = createWorldBookDraft("示例世界书");
@@ -413,6 +420,8 @@ export function createProjectDraft(name = "我的 CardForge 项目", mode: "ligh
     name,
     description: "",
     mode,
+    trustLevel,
+    compatibilityTarget,
     characters: [character],
     worldBooks: [worldBook],
     assets: [],

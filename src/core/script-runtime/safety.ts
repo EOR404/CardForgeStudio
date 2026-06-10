@@ -1,9 +1,13 @@
-import type { CardScript, QualityIssue } from "../schema/types";
+import type { CardScript, ProjectTrustLevel, QualityIssue } from "../schema/types";
+import { canEnableManagedRuntime, trustLevelLabel } from "../security/trust";
 
 const BLOCKED_PERMISSIONS = new Set(["apiKey.read", "fs.fullAccess", "shell.execute", "network.fullAccess"]);
 
-export function scriptSafetyIssues(script: CardScript): QualityIssue[] {
+export function scriptSafetyIssues(script: CardScript, trustLevel: ProjectTrustLevel = "trusted"): QualityIssue[] {
   const issues: QualityIssue[] = [];
+  if (script.enabled && !canEnableManagedRuntime(trustLevel)) {
+    issues.push(issue("warning", "script.trust", `${trustLevelLabel(trustLevel)}项目不能启用脚本草案。`));
+  }
   for (const permission of script.permissions) {
     if (BLOCKED_PERMISSIONS.has(permission)) {
       issues.push(issue("error", "script.permission", `高风险权限被禁止：${permission}`));

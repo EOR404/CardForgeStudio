@@ -1,8 +1,22 @@
 import { z } from "zod";
 
 const aiCapabilitySchema = z.enum(["chat", "json", "vision", "image-generation", "embeddings", "tools", "streaming"]);
+const projectTrustLevelSchema = z.enum(["untrusted", "restricted", "trusted"]);
+const compatibilityTargetSchema = z.enum([
+  "sillytavern_v2",
+  "sillytavern_regex",
+  "sillytavern_mvu",
+  "chub",
+  "cardforge_native",
+  "local_test"
+]);
 const recordSchema = z.record(z.unknown());
 const recordArraySchema = z.array(recordSchema);
+const worldBookEntryConditionSchema = z.object({
+  path: z.string(),
+  operator: z.enum(["==", "!=", ">", ">=", "<", "<=", "contains"]),
+  value: z.union([z.string(), z.number(), z.boolean()])
+});
 
 export const worldBookEntrySchema = z.object({
   id: z.string(),
@@ -20,6 +34,7 @@ export const worldBookEntrySchema = z.object({
   position: z.enum(["before_char", "after_char", "at_depth", "authors_note"]),
   depth: z.number().optional(),
   probability: z.number().optional(),
+  conditions: z.array(worldBookEntryConditionSchema).optional(),
   extensions: z.record(z.unknown()).optional()
 });
 
@@ -131,6 +146,8 @@ export const cardProjectImportSchema = z.object({
   name: z.string().min(1, "项目名不能为空"),
   description: z.string().optional(),
   mode: z.enum(["light", "advanced"]).optional(),
+  trustLevel: projectTrustLevelSchema.optional(),
+  compatibilityTarget: compatibilityTargetSchema.optional(),
   characters: recordArraySchema,
   worldBooks: recordArraySchema,
   assets: recordArraySchema.optional(),

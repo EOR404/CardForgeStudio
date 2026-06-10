@@ -19,11 +19,23 @@ export type SearchTarget = {
 
 export type ProjectMode = "light" | "advanced";
 
+export type ProjectTrustLevel = "untrusted" | "restricted" | "trusted";
+
+export type CompatibilityTarget =
+  | "sillytavern_v2"
+  | "sillytavern_regex"
+  | "sillytavern_mvu"
+  | "chub"
+  | "cardforge_native"
+  | "local_test";
+
 export type CardProject = {
   id: string;
   name: string;
   description?: string;
   mode: ProjectMode;
+  trustLevel: ProjectTrustLevel;
+  compatibilityTarget: CompatibilityTarget;
   characters: InternalCharacter[];
   worldBooks: InternalWorldBook[];
   assets: Asset[];
@@ -363,7 +375,7 @@ export type ExportRecord = {
   characterVersionId?: string;
   worldBookIds: string[];
   assetIds: string[];
-  format: "v1_json" | "v2_json" | "v3_json" | "v2_png" | "worldbook_json" | "project_json";
+  format: "v1_json" | "v2_json" | "v3_json" | "v2_png" | "avatar_png" | "worldbook_json" | "project_json";
   outputPath: string;
   warnings: string[];
   createdAt: number;

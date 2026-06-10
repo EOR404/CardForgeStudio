@@ -20,6 +20,7 @@ import type {
   Asset,
   CardProject,
   CardScript,
+  CompatibilityTarget,
   CompatibilityReport,
   CustomTestCase,
   ExportRecord,
@@ -28,6 +29,7 @@ import type {
   InternalWorldBook,
   PluginManifest,
   ProjectMode,
+  ProjectTrustLevel,
   RegexRule,
   TestSession,
   VersionSnapshot,
@@ -116,8 +118,17 @@ const scriptTriggers: CardScript["trigger"][] = [
 ];
 const scriptCompatibility: CardScript["compatibility"][] = ["native", "partial", "external", "unknown"];
 const projectModes: ProjectMode[] = ["light", "advanced"];
+const trustLevels: ProjectTrustLevel[] = ["untrusted", "restricted", "trusted"];
+const compatibilityTargets: CompatibilityTarget[] = [
+  "sillytavern_v2",
+  "sillytavern_regex",
+  "sillytavern_mvu",
+  "chub",
+  "cardforge_native",
+  "local_test"
+];
 const snapshotTargetTypes: VersionSnapshot["targetType"][] = ["character", "worldbook", "project", "advanced"];
-const exportFormats: ExportRecord["format"][] = ["v1_json", "v2_json", "v3_json", "v2_png", "worldbook_json", "project_json"];
+const exportFormats: ExportRecord["format"][] = ["v1_json", "v2_json", "v3_json", "v2_png", "avatar_png", "worldbook_json", "project_json"];
 const testStatuses: NonNullable<TestSession["status"]>[] = ["untagged", "passed", "failed", "needs_review"];
 
 export function normalizeImportedProject(raw: unknown, sourceLabel = "项目", options: { stripSecrets?: boolean } = {}): CardProject {
@@ -128,7 +139,9 @@ export function normalizeImportedProject(raw: unknown, sourceLabel = "项目", o
 
   const source = parsed.data as Partial<CardProject>;
   const mode = oneOf(source.mode, projectModes, "light");
-  const base = createProjectDraft(asString(source.name, "导入项目"), mode);
+  const trustLevel = oneOf(source.trustLevel, trustLevels, "untrusted");
+  const compatibilityTarget = oneOf(source.compatibilityTarget, compatibilityTargets, "sillytavern_v2");
+  const base = createProjectDraft(asString(source.name, "导入项目"), mode, compatibilityTarget);
   const advanced = normalizeAdvancedProjectData(source.advanced, base.advanced);
   const project: CardProject = {
     ...base,
@@ -136,6 +149,8 @@ export function normalizeImportedProject(raw: unknown, sourceLabel = "项目", o
     name: asString(source.name, "导入项目"),
     description: optionalString(source.description) ?? "",
     mode,
+    trustLevel,
+    compatibilityTarget,
     characters: objectArray(source.characters).map(normalizeCharacter),
     worldBooks: objectArray(source.worldBooks).map(normalizeWorldBook),
     assets: objectArray(source.assets).map(normalizeAsset),
