@@ -4,6 +4,7 @@ import { maybeAIInvocationLog } from "../core/ai/logging";
 import { checkCharacterWithAI, generateCharacterDraftWithAI, rewriteCharacterFieldWithAI, suggestWorldBookWithAI } from "../core/ai/operations";
 import { resolveAIForTask } from "../core/ai/presets";
 import { prettyJson, toV2Character } from "../core/exporter/character";
+import { importCharacterCharx } from "../core/exporter/charx";
 import { extractCharacterFromPngDataUrl } from "../core/exporter/pngMetadata";
 import { importCharacterJson, type ImportCharacterResult } from "../core/importer/character";
 import type { CompatibilityReport, InternalCharacter, QualityIssue } from "../core/schema/types";
@@ -11,7 +12,7 @@ import { buildCharacterTokenBreakdown, checkCharacterQuality } from "../core/qua
 import { diffSnapshotAgainstCurrent, summarizeDiff } from "../core/version/diff";
 import { normalizeWorldBookEntryCandidate } from "../core/worldbook/normalize";
 import { getCurrentProject, useAppStore } from "../stores/useAppStore";
-import { readFileAsDataUrl, readFileAsText } from "../utils/file";
+import { readFileAsArrayBuffer, readFileAsDataUrl, readFileAsText } from "../utils/file";
 
 type TextFieldKey =
   | "description"
@@ -98,6 +99,9 @@ export function CharacterPage() {
   }
 
   async function parseCharacterImportFile(file: File): Promise<ImportCharacterResult> {
+    if (isCharxFile(file)) {
+      return importCharacterCharx(new Uint8Array(await readFileAsArrayBuffer(file)), file.name);
+    }
     if (isPngFile(file)) {
       const dataUrl = await readFileAsDataUrl(file);
       return extractCharacterFromPngDataUrl(dataUrl, file.name);
@@ -264,8 +268,8 @@ export function CharacterPage() {
             <Plus size={17} /> 新建
           </button>
           <label className="secondary-button">
-            <FileJson size={17} /> 导入 JSON/PNG
-            <input hidden type="file" accept="application/json,.json,image/png,.png" onChange={(event) => event.target.files?.[0] && importCharacterFile(event.target.files[0])} />
+            <FileJson size={17} /> 导入 JSON/PNG/CHARX
+            <input hidden type="file" accept="application/json,.json,image/png,.png,.charx,application/zip" onChange={(event) => event.target.files?.[0] && importCharacterFile(event.target.files[0])} />
           </label>
         </div>
       </div>
@@ -871,4 +875,8 @@ function compatibilityFeatureLabels(report: CompatibilityReport): string[] {
 
 function isPngFile(file: File): boolean {
   return file.type === "image/png" || file.name.toLowerCase().endsWith(".png");
+}
+
+function isCharxFile(file: File): boolean {
+  return file.name.toLowerCase().endsWith(".charx");
 }

@@ -2,12 +2,14 @@ import type {
   AIActionResult,
   AIProviderConfig,
   AIPreset,
+  Asset,
   ChatMessage,
   InternalCharacter,
   QualityIssue,
   TriggeredWorldBookEntry
 } from "../schema/types";
 import { estimateTokens } from "../prompt-builder/buildPrompt";
+import { callOpenAICompatibleMessagesDetailed, type OpenAICompatibleMessage } from "./client";
 import { callImageGeneration, type GeneratedImage, type ImageGenerationInput } from "./image";
 import { runLoggedCompletion } from "./logging";
 import { createAIInvocationLog, LoggedAIError } from "./logging";
@@ -16,6 +18,15 @@ import { buildPresetMessages } from "./presets";
 export type ImagePromptDraft = {
   positivePrompt: string;
   negativePrompt?: string;
+  notes?: string;
+};
+
+export type ImageUnderstandingDraft = {
+  description: string;
+  tags: string[];
+  purpose?: Asset["purpose"];
+  characterHints?: string[];
+  promptHints?: string[];
   notes?: string;
 };
 
@@ -226,6 +237,86 @@ export async function generateImagesWithAI(
   }
 }
 
+export async function analyzeImageWithAI(
+  provider: AIProviderConfig,
+  input: {
+    assetName: string;
+    mimeType?: string;
+    dataUrl: string;
+    currentPurpose?: Asset["purpose"];
+    currentTags?: string[];
+    notes?: string;
+  },
+  preset?: AIPreset
+): Promise<AIActionResult<ImageUnderstandingDraft>> {
+  if (!input.dataUrl.startsWith("data:image/")) throw new Error("图片理解需要 image dataUrl。");
+  const prompt = preset
+    ? buildPresetMessages(preset, {
+        assetName: input.assetName,
+        mimeType: input.mimeType ?? "",
+        currentPurpose: input.currentPurpose ?? "",
+        tags: input.currentTags ?? [],
+        notes: input.notes ?? ""
+      }).at(-1)?.content ?? ""
+    : [
+        `请分析这张 CardForge 资源图片：${input.assetName}`,
+        `当前用途：${input.currentPurpose ?? "未分类"}`,
+        `现有标签：${(input.currentTags ?? []).join(", ") || "无"}`,
+        input.notes ? `现有 notes：${input.notes}` : "",
+        "只输出 JSON，不输出 Markdown。字段：description, tags, purpose, characterHints, promptHints, notes。",
+        "purpose 只能是 avatar/cover/export-cover/halfbody/fullbody/background/expression/map/icon/reference/other。tags 使用简短中文标签。"
+      ].filter(Boolean).join("\n");
+  const systemPrompt = preset?.systemPrompt
+    ? buildPresetMessages(preset, { assetName: input.assetName, image: input.assetName }).at(0)?.content ?? ""
+    : "你是 CardForge Studio 的图片理解助手，帮助角色卡作者给资源图写描述、标签、用途和文生图提示词线索。";
+  const messages: OpenAICompatibleMessage[] = [
+    { role: "system", content: systemPrompt },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: prompt },
+        { type: "image_url", image_url: { url: input.dataUrl, detail: "auto" } }
+      ]
+    }
+  ];
+  const startedAt = performance.now();
+  try {
+    const result = await callOpenAICompatibleMessagesDetailed(provider, messages, {
+      ...(preset?.paramsOverride ?? { maxTokens: 900 }),
+      stream: false
+    });
+    const parsed = parseAiJson(result.content);
+    const draft = normalizeImageUnderstandingDraft(parsed.parsed, result.content);
+    const log = createAIInvocationLog({
+      provider,
+      taskType: "imageUnderstanding",
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      durationMs: result.durationMs,
+      success: true,
+      rawOutput: result.content
+    });
+    return {
+      raw: result.content,
+      parsed: draft,
+      error: parsed.error,
+      log
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const log = createAIInvocationLog({
+      provider,
+      taskType: "imageUnderstanding",
+      inputTokens: estimateTokens([input.assetName, input.notes ?? "", (input.currentTags ?? []).join(", ")].join("\n")) + 85,
+      outputTokens: 0,
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      success: false,
+      errorMessage: message
+    });
+    throw new LoggedAIError(message, log);
+  }
+}
+
 export function parseAiJson(raw: string): AIActionResult {
   const trimmed = raw.trim();
   const candidates = [trimmed, extractJsonBlock(trimmed)].filter(Boolean) as string[];
@@ -280,6 +371,52 @@ function normalizeImagePromptDraft(value: unknown, raw: string): ImagePromptDraf
     };
   }
   return { positivePrompt: raw.trim() };
+}
+
+function normalizeImageUnderstandingDraft(value: unknown, raw: string): ImageUnderstandingDraft {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    return {
+      description: stringValue(record.description) ?? stringValue(record.summary) ?? raw.trim(),
+      tags: stringList(record.tags).slice(0, 12),
+      purpose: normalizeAssetPurpose(record.purpose),
+      characterHints: stringList(record.characterHints ?? record.character_hints).slice(0, 8),
+      promptHints: stringList(record.promptHints ?? record.prompt_hints).slice(0, 12),
+      notes: stringValue(record.notes)
+    };
+  }
+  return {
+    description: raw.trim(),
+    tags: []
+  };
+}
+
+function normalizeAssetPurpose(value: unknown): Asset["purpose"] | undefined {
+  const purposes: NonNullable<Asset["purpose"]>[] = [
+    "avatar",
+    "cover",
+    "export-cover",
+    "halfbody",
+    "fullbody",
+    "background",
+    "expression",
+    "map",
+    "icon",
+    "reference",
+    "other"
+  ];
+  return purposes.includes(value as NonNullable<Asset["purpose"]>) ? (value as Asset["purpose"]) : undefined;
+}
+
+function stringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
+  if (typeof value === "string") {
+    return value
+      .split(/[,，\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
 }
 
 function stringValue(value: unknown): string | undefined {

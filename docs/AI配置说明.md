@@ -44,6 +44,9 @@ CardForge Studio 不内置 API Key，也不绑定单一模型平台。所有 AI 
 
 - `imagePrompt` 使用文本模型，负责把角色卡转换成 positive / negative prompt。
 - `imageGeneration` 使用图片 Provider。OpenAI-compatible images 会请求 `/images/generations`；Stable Diffusion WebUI 会请求 `/sdapi/v1/txt2img`。
+- `imageUnderstanding` 使用支持 vision 的 OpenAI-compatible chat Provider，把资源图片作为 `image_url` 发送，并要求返回 description、tags、purpose、characterHints、promptHints 和 notes。资源页只会在用户点击“应用分析到资源”后写入结果。
+- ComfyUI 会请求 `/prompt`。需要在 Provider headers 中添加 `X-CardForge-ComfyUI-Workflow`，值为 ComfyUI API-format workflow JSON，可使用 `{{prompt}}`、`{{negativePrompt}}`、`{{width}}`、`{{height}}`、`{{steps}}`、`{{seed}}` 占位符。
+- ComfyUI 可选轮询：在 headers 中添加 `X-CardForge-ComfyUI-Poll-Attempts: 20` 和 `X-CardForge-ComfyUI-Poll-Interval-Ms: 1000` 后，会在拿到 `prompt_id` 后请求 `/history/{prompt_id}`，发现输出图片时再请求 `/view` 拉取候选图。未配置轮询或超时未完成时，会保存 `prompt_id` 任务记录，最终图片仍可在 ComfyUI 侧查看或另行导入资源库。
 - 如果 Provider 有 CORS 限制，可使用 `proxy / relay URL` 代发请求。
 
 ## Preset 字段

@@ -41,15 +41,15 @@ corepack pnpm self-check
 - 全项目搜索：仪表盘可搜索角色、世界书条目、资源、AI 配置、测试、导出和高级模块，并跳转到来源。
 - 角色卡编辑：创建、复制、删除、字段编辑、`creator_notes`、`extensions` JSON 编辑、V2 JSON 实时预览、字段 token 分布、质量检查和版本快照。
 - 版本管理：角色、世界书与项目快照备注、快照列表、当前字段/条目差异、从快照恢复，并可在导出页选择角色快照版本。
-- 导入导出：V1 JSON、V2 JSON、实验性 V3 JSON、世界书 JSON、角色头像 PNG、V2 PNG metadata 读写基础实现，角色页可直接导入 JSON/PNG，角色导出支持当前状态或指定快照，V2 PNG 支持多图片批量导出，并按项目默认兼容目标生成发布前检查、依赖说明和 Markdown 导出报告。
+- 导入导出：V1 JSON、V2 JSON、实验性 V3 JSON、基础 CHARX 资源包、世界书 JSON、角色头像 PNG、V2 PNG metadata 读写实现，角色页可直接导入 JSON/PNG/CHARX，角色导出支持当前状态或指定快照，V2 PNG 支持多图片批量导出，并按项目默认兼容目标生成发布前检查、依赖说明和 Markdown 导出报告。
 - 世界书：条目编辑、快照/恢复、自动分类视图、本地从 `.txt/.md` 长设定拆分条目、AI 从长设定文本抽取条目、关键词/常驻/选择性触发、变量条件触发、触发测试、触发原因、插入位置/order、token 消耗、预算排除、未触发原因和关键词/预算/顺序问题审计。
-- 图片资源库：图片/文本/JSON/脚本资源导入、拖拽、缩略图、用途标记、标签、角色/世界书关联、使用记录和导出图片选择。
+- 图片资源库：图片/文本/JSON/脚本资源导入、拖拽、缩略图、用途标记、AI 图片理解、标签、角色/世界书关联、使用记录和导出图片选择。
 - AI 图片生成：资源页可根据当前角色生成图片提示词，编辑 positive/negative prompt，调用图片 Provider 生成候选图，并在确认后保存到项目图片库。
-- AI Provider：OpenAI-compatible/OpenAI/DeepSeek/Anthropic/Gemini/Ollama/LM Studio/vLLM/ComfyUI/Stable Diffusion WebUI/自定义 HTTP API 类型配置、Key 密码输入、一键清除 Key/敏感 headers、模型列表、自定义 headers、topP/stream 参数、能力标签、HTTP 转发端点、默认任务类型、连接测试、AI 草稿、字段生成/润色/缩短/扩写/风格化、角色质检、世界书拆分和长文本条目抽取。
+- AI Provider：OpenAI-compatible/OpenAI/DeepSeek/Anthropic/Gemini/Ollama/LM Studio/vLLM/ComfyUI/Stable Diffusion WebUI/自定义 HTTP API 类型配置、Key 密码输入、一键清除 Key/敏感 headers、模型列表、自定义 headers、topP/stream 参数、能力标签、HTTP 转发端点、默认任务类型、连接测试、AI 草稿、字段生成/润色/缩短/扩写/风格化、角色质检、世界书拆分、长文本条目抽取和图片理解。
 - AI 预设：可编辑任务 Prompt、输出模式、变量、Provider 路由和模型覆盖，制卡 AI 操作会实际使用预设。
 - AI 路由：任务调用优先使用预设显式绑定的 Provider，其次使用 Provider 的默认任务类型，再回退到当前选中 Provider 和首个可用 Provider。
 - AI 调用日志：记录任务类型、Provider、模型、token、耗时、成功/失败、原始输出摘要和粗估费用，可查看今日费用与 Provider 成本对比。
-- 测试沙盒：内置身份/性格/世界书/越狱/变量/前端测试用例、自定义测试用例、Prompt 构建链路可视化、分段 token/来源/跳转、变量/前端/脚本/正则链路预览、世界书触发日志、AI 测试聊天、失败样本标记、角色快照 A/B 对比和测试记录保存。
+- 测试沙盒：内置身份/性格/世界书/越狱/变量/前端测试用例、自定义测试用例、Prompt 构建链路可视化、分段 token/来源/跳转、变量/前端/脚本/正则链路预览、世界书触发日志、AI 回复变量更新识别与手动应用、失败样本标记、角色快照 A/B 对比和测试记录保存。
 - 测试诊断：测试聊天支持 `testChat` 任务路由，诊断按钮支持 `diagnoseTest` 预设并保存诊断记录。
 - 高级入口：Regex Lab、Variable Lab、Script Manager、Frontend Sandbox、Plugin Manager。
 - Regex Lab：正则规则新增、导入 JSON、选择、编辑目标/顺序/标签/启用状态，按流水线展示命中、错误和替换结果。
@@ -66,15 +66,15 @@ corepack pnpm self-check
 ## 已知限制
 
 - 当前默认使用浏览器 localStorage 保存项目数据；Chromium localhost 可实验性保存/打开可见项目文件夹，Tauri 真实文件系统适配仍需 Rust 环境。
-- V2 PNG metadata 已实现基础 tEXt/chara chunk，仍需更多社区样本兼容测试。
-- AI 调用依赖用户自定义 Provider；没有内置 API Key。浏览器无法直接使用系统级代理，`proxy / relay URL` 需要填写能接收 `endpoint`、`headers`、`body` 并代发请求的 HTTP 转发端点。图片生成目前支持 OpenAI-compatible images 和 Stable Diffusion WebUI / A1111 常见返回格式。
+- V2 PNG metadata 已支持 tEXt / iTXt / zTXt 的 chara / Chara 文本块读取，导出默认写入 tEXt/chara，仍需更多社区样本兼容测试。
+- AI 调用依赖用户自定义 Provider；没有内置 API Key。浏览器无法直接使用系统级代理，`proxy / relay URL` 需要填写能接收 `endpoint`、`headers`、`body` 并代发请求的 HTTP 转发端点。图片生成目前支持 OpenAI-compatible images、Stable Diffusion WebUI / A1111 常见返回格式，以及 ComfyUI `/prompt` 队列提交、可选 `/history` 轮询和 `/view` 图片拉取。
 - 高级脚本和插件第一版只做静态管理，不执行未知代码。
 - Monaco/Tailwind/Tauri 尚未接入，当前使用 textarea 与手写 CSS 完成可运行闭环。
 
 ## 后续 TODO
 
 - 接入 Tauri 2 真实文件系统适配。
-- 完善 Character Card V3 / CHARX / 更多 PNG chunk 兼容。
+- 完善 Character Card V3 / CHARX 社区样本和更多 PNG 样本兼容。
 - 增加 IndexedDB 或 SQLite 索引用于超大项目搜索。
 - 扩展 AI 路由与任务预设编辑器。
 - 扩展端到端测试和浏览器截图验收。

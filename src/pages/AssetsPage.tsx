@@ -1,7 +1,7 @@
 import { Image, Link2, Plus, Sparkles, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { maybeAIInvocationLog } from "../core/ai/logging";
-import { generateImagePromptWithAI, generateImagesWithAI } from "../core/ai/operations";
+import { analyzeImageWithAI, generateImagePromptWithAI, generateImagesWithAI, type ImageUnderstandingDraft } from "../core/ai/operations";
 import { resolveAIForTask } from "../core/ai/presets";
 import type { GeneratedImage } from "../core/ai/image";
 import type { Asset } from "../core/schema/types";
@@ -45,6 +45,9 @@ export function AssetsPage() {
   const [imageBusy, setImageBusy] = useState("");
   const [imageStatus, setImageStatus] = useState("");
   const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([]);
+  const [imageAnalysis, setImageAnalysis] = useState<ImageUnderstandingDraft | undefined>();
+  const [imageAnalysisRaw, setImageAnalysisRaw] = useState("");
+  const [imageAnalysisAssetId, setImageAnalysisAssetId] = useState("");
   if (!project) return null;
   const activeProject = project;
   const selectedAsset = activeProject.assets.find((asset) => asset.id === state.selectedAssetId) ?? activeProject.assets[0];
@@ -157,18 +160,20 @@ export function AssetsPage() {
 
   function saveGeneratedImage(image: GeneratedImage, index: number) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const name = `${selectedCharacter?.name || "cardforge"}-${imagePurpose}-${timestamp}-${index + 1}.png`;
+    const hasImagePreview = Boolean(image.dataUrl || image.url);
+    const name = `${selectedCharacter?.name || "cardforge"}-${imagePurpose}-${timestamp}-${index + 1}${hasImagePreview ? ".png" : ".comfyui-job.json"}`;
     state.addAsset({
       name,
-      type: "image",
-      purpose: imagePurpose,
+      type: hasImagePreview ? "image" : "json",
+      purpose: hasImagePreview ? imagePurpose : "reference",
       source: "generated",
-      mimeType: dataUrlMimeType(image.dataUrl) ?? "image/png",
-      dataUrl: image.dataUrl,
+      mimeType: hasImagePreview ? dataUrlMimeType(image.dataUrl) ?? "image/png" : "application/json",
+      dataUrl: hasImagePreview ? image.dataUrl : jsonDataUrl(buildGeneratedImageRecord(image, positivePrompt, negativePrompt)),
       path: image.url,
-      thumbnailUrl: image.dataUrl ?? image.url,
+      thumbnailUrl: hasImagePreview ? image.dataUrl ?? image.url : undefined,
       tags: [
         "AI生成",
+        ...(image.provider === "comfyui" ? ["ComfyUI", "任务记录"] : []),
         purposeLabel(imagePurpose),
         ...(selectedCharacter ? [selectedCharacter.name] : [])
       ],
@@ -177,10 +182,69 @@ export function AssetsPage() {
       notes: [
         `positive: ${positivePrompt}`,
         negativePrompt ? `negative: ${negativePrompt}` : "",
-        image.revisedPrompt ? `revised: ${image.revisedPrompt}` : ""
+        image.jobId ? `jobId: ${image.jobId}` : "",
+        image.revisedPrompt ? `revised: ${image.revisedPrompt}` : "",
+        !hasImagePreview ? "此记录表示图片任务已提交；最终图片需在 Provider 侧查看或另行导入。" : ""
       ].filter(Boolean).join("\n")
     });
     setImageStatus(`已保存候选图：${name}`);
+  }
+
+  async function analyzeSelectedImage() {
+    if (!selectedAsset || selectedAsset.type !== "image" || !selectedAsset.dataUrl) return alert("请选择带 dataUrl 的图片资源。");
+    const { provider, preset } = resolveTaskAI("imageUnderstanding");
+    if (!provider) return alert("请先在 AI 设置页添加可用于 imageUnderstanding 的视觉 Provider。");
+    setImageBusy("understanding");
+    setImageStatus("正在分析图片...");
+    try {
+      const result = await analyzeImageWithAI(
+        provider,
+        {
+          assetName: selectedAsset.name,
+          mimeType: selectedAsset.mimeType,
+          dataUrl: selectedAsset.dataUrl,
+          currentPurpose: selectedAsset.purpose,
+          currentTags: selectedAsset.tags,
+          notes: selectedAsset.notes
+        },
+        preset
+      );
+      if (result.log) state.addAIInvocationLog(result.log);
+      setImageAnalysis(result.parsed);
+      setImageAnalysisRaw(result.raw);
+      setImageAnalysisAssetId(selectedAsset.id);
+      setImageStatus(result.error ? `图片分析完成，但输出不是标准 JSON：${result.error}` : "图片分析完成。点击应用后才会写入资源。");
+    } catch (error) {
+      recordAIError(error);
+      setImageStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setImageBusy("");
+    }
+  }
+
+  function applyImageAnalysis() {
+    if (!selectedAsset || !imageAnalysis || imageAnalysisAssetId !== selectedAsset.id) return;
+    const nextTags = [
+      ...new Set([
+        ...selectedAsset.tags,
+        "AI分析",
+        ...imageAnalysis.tags,
+        ...(imageAnalysis.purpose ? [purposeLabel(imageAnalysis.purpose)] : [])
+      ].filter(Boolean))
+    ];
+    const analysisNotes = [
+      "AI 图片理解：",
+      imageAnalysis.description,
+      imageAnalysis.characterHints?.length ? `角色线索：${imageAnalysis.characterHints.join("；")}` : "",
+      imageAnalysis.promptHints?.length ? `提示词线索：${imageAnalysis.promptHints.join(", ")}` : "",
+      imageAnalysis.notes ? `备注：${imageAnalysis.notes}` : ""
+    ].filter(Boolean).join("\n");
+    updateSelectedAsset({
+      purpose: imageAnalysis.purpose ?? selectedAsset.purpose,
+      tags: nextTags,
+      notes: [selectedAsset.notes, analysisNotes].filter(Boolean).join("\n\n")
+    });
+    setImageStatus(`已应用图片分析：${selectedAsset.name}`);
   }
 
   function updateSelectedAsset(patch: Partial<Asset>) {
@@ -349,10 +413,11 @@ export function AssetsPage() {
                     {image.dataUrl || image.url ? (
                       <img src={image.dataUrl ?? image.url} alt={`AI 候选图 ${index + 1}`} />
                     ) : (
-                      <div className="muted">无预览</div>
+                      <div className="muted">任务记录</div>
                     )}
                     <div>
-                      <strong>候选图 {index + 1}</strong>
+                      <strong>{image.jobId ? `ComfyUI 任务 ${index + 1}` : `候选图 ${index + 1}`}</strong>
+                      {image.jobId && <span className="muted">prompt_id: {image.jobId}</span>}
                       {image.revisedPrompt && <span className="muted">{image.revisedPrompt}</span>}
                       <button className="secondary-button" onClick={() => saveGeneratedImage(image, index)}>
                         保存到资源库
@@ -435,7 +500,30 @@ export function AssetsPage() {
                 >
                   <Link2 size={17} /> 设为角色头像
                 </button>
+                <button
+                  className="secondary-button"
+                  disabled={imageBusy === "understanding" || selectedAsset.type !== "image" || !selectedAsset.dataUrl}
+                  onClick={analyzeSelectedImage}
+                >
+                  <Sparkles size={17} /> AI 分析图片
+                </button>
               </div>
+              {imageAnalysis && imageAnalysisAssetId === selectedAsset.id && (
+                <section className="callout">
+                  <strong>图片理解结果</strong>
+                  <p>{imageAnalysis.description}</p>
+                  <div className="trigger-meta">
+                    {imageAnalysis.purpose && <span>{purposeLabel(imageAnalysis.purpose)}</span>}
+                    {imageAnalysis.tags.map((tag) => <span key={tag}>{tag}</span>)}
+                  </div>
+                  {imageAnalysis.promptHints?.length ? <pre>提示词线索：{imageAnalysis.promptHints.join(", ")}</pre> : null}
+                  {imageAnalysis.characterHints?.length ? <pre>角色线索：{imageAnalysis.characterHints.join("；")}</pre> : null}
+                  {imageAnalysisRaw && <pre>{imageAnalysisRaw.slice(0, 900)}</pre>}
+                  <button className="primary-button" onClick={applyImageAnalysis}>
+                    应用分析到资源
+                  </button>
+                </section>
+              )}
               <div className="form-row">
                 <label>
                   关联角色
@@ -574,4 +662,21 @@ function splitList(value: string): string[] {
 
 function dataUrlMimeType(dataUrl?: string): string | undefined {
   return dataUrl?.match(/^data:([^;]+);base64,/)?.[1];
+}
+
+function buildGeneratedImageRecord(image: GeneratedImage, positivePrompt: string, negativePrompt: string): Record<string, unknown> {
+  return {
+    provider: image.provider,
+    jobId: image.jobId,
+    url: image.url,
+    revisedPrompt: image.revisedPrompt,
+    positivePrompt,
+    negativePrompt,
+    raw: image.raw
+  };
+}
+
+function jsonDataUrl(value: unknown): string {
+  const text = JSON.stringify(value, null, 2);
+  return `data:application/json;base64,${btoa(unescape(encodeURIComponent(text)))}`;
 }

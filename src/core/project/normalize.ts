@@ -128,7 +128,7 @@ const compatibilityTargets: CompatibilityTarget[] = [
   "local_test"
 ];
 const snapshotTargetTypes: VersionSnapshot["targetType"][] = ["character", "worldbook", "project", "advanced"];
-const exportFormats: ExportRecord["format"][] = ["v1_json", "v2_json", "v3_json", "v2_png", "avatar_png", "worldbook_json", "project_json"];
+const exportFormats: ExportRecord["format"][] = ["v1_json", "v2_json", "v3_json", "charx", "v2_png", "avatar_png", "worldbook_json", "project_json"];
 const testStatuses: NonNullable<TestSession["status"]>[] = ["untagged", "passed", "failed", "needs_review"];
 
 export function normalizeImportedProject(raw: unknown, sourceLabel = "项目", options: { stripSecrets?: boolean } = {}): CardProject {
@@ -376,8 +376,24 @@ function normalizeTestSession(value: UnknownRecord): TestSession {
     promptPreview: asString(value.promptPreview, ""),
     promptSections: objectArray(value.promptSections) as TestSession["promptSections"],
     diagnostics: objectArray(value.diagnostics) as TestSession["diagnostics"],
+    variableUpdates: objectArray(value.variableUpdates).map(normalizeVariableUpdateLog),
     createdAt: asNumber(value.createdAt, now()),
     updatedAt: asNumber(value.updatedAt, now())
+  };
+}
+
+function normalizeVariableUpdateLog(value: UnknownRecord): NonNullable<TestSession["variableUpdates"]>[number] {
+  return {
+    source: oneOf(value.source, ["assistant", "manual"] as const, "assistant"),
+    messageIndex: value.messageIndex === undefined ? undefined : asNumber(value.messageIndex, 0),
+    diffs: objectArray(value.diffs).map((diff) => ({
+      path: asString(diff.path, ""),
+      before: diff.before,
+      after: diff.after,
+      operation: oneOf(diff.operation, ["set", "remove"] as const, "set")
+    })).filter((diff) => diff.path.trim()),
+    applied: asBoolean(value.applied, false),
+    createdAt: asNumber(value.createdAt, now())
   };
 }
 

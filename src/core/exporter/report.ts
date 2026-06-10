@@ -5,7 +5,7 @@ import { canEnableFrontendScripts, trustLevelLabel } from "../security/trust";
 import type { Asset, CardProject, CompatibilityTarget, InternalCharacter, InternalWorldBook, QualityIssue } from "../schema/types";
 import { getV1LossWarnings } from "./character";
 
-export type ExportFormat = "v1_json" | "v2_json" | "v3_json" | "v2_png" | "avatar_png" | "worldbook_json";
+export type ExportFormat = "v1_json" | "v2_json" | "v3_json" | "charx" | "v2_png" | "avatar_png" | "worldbook_json";
 
 export type ExportTarget = CompatibilityTarget;
 
@@ -60,10 +60,13 @@ export function buildExportPreflightReport(input: {
   character?: InternalCharacter;
   worldBook?: InternalWorldBook;
   imageAsset?: Asset;
+  imageAssets?: Asset[];
 }): ExportPreflightReport {
   const checks: ExportCheck[] = [];
   const dependencies: ExportDependency[] = [];
   const { project, format, target, character, worldBook, imageAsset } = input;
+  const pngImageAssets = format === "v2_png" ? input.imageAssets ?? (imageAsset ? [imageAsset] : []) : [];
+  const reportImageAsset = format === "v2_png" ? pngImageAssets[0] : imageAsset;
 
   if (format !== "worldbook_json") {
     if (!character) {
@@ -75,7 +78,7 @@ export function buildExportPreflightReport(input: {
           checks.push(check(`v1-loss-${warning}`, "warning", "format", `导出 V1 时：${warning}`));
         }
       }
-      addCharacterDependencies(dependencies, project, character, worldBook, imageAsset, format, target);
+      addCharacterDependencies(dependencies, project, character, worldBook, format, target, pngImageAssets.length ? pngImageAssets : imageAsset ? [imageAsset] : []);
     }
   }
 
@@ -85,25 +88,28 @@ export function buildExportPreflightReport(input: {
     checks.push(check("missing-worldbook", "blocker", "worldbook", "请选择世界书后再导出。"));
   }
 
-  if ((format === "v2_png" || format === "avatar_png") && !imageAsset) {
-    checks.push(check("missing-png-image", "blocker", "asset", `${format === "avatar_png" ? "头像 PNG" : "V2 PNG"} 需要选择 PNG 图片资源。`, "可先在资源页导入图片，或在导出页临时导入。"));
+  if (format === "v2_png") {
+    if (!pngImageAssets.length) {
+      checks.push(check("missing-png-image", "blocker", "asset", "V2 PNG 需要选择 PNG 图片资源。", "可先在资源页导入图片，或在导出页临时导入。"));
+    }
+    checks.push(...pngImageAssetChecks(pngImageAssets, "v2_png"));
   }
-  if ((format === "v2_png" || format === "avatar_png") && imageAsset && !imageAsset.dataUrl) {
-    checks.push(check("image-no-data", "blocker", "asset", format === "avatar_png" ? "所选图片缺少 dataUrl，无法导出头像 PNG。" : "所选图片缺少 dataUrl，无法写入 PNG metadata。"));
+  if (format === "avatar_png") {
+    if (!imageAsset) {
+      checks.push(check("missing-png-image", "blocker", "asset", "头像 PNG 需要选择 PNG 图片资源。", "可先在资源页导入图片，或在导出页临时导入。"));
+    } else {
+      checks.push(...pngImageAssetChecks([imageAsset], "avatar_png"));
+    }
   }
-  if ((format === "v2_png" || format === "avatar_png") && imageAsset && imageAsset.dataUrl && !isPngAsset(imageAsset)) {
+  if (format === "v3_json" || format === "charx") {
     checks.push(
       check(
-        "image-not-png",
-        "blocker",
-        "asset",
-        format === "avatar_png" ? "头像 PNG 导出需要 PNG 图片，请换用 PNG 资源。" : "V2 PNG metadata 只能写入 PNG 图片，请换用 PNG 资源。",
-        imageAsset.mimeType || imageAsset.dataUrl.slice(0, 32)
+        "v3-experimental",
+        "warning",
+        "format",
+        format === "charx" ? "CHARX 为基础资源包兼容导出，发布前请在目标平台验证。" : "V3 JSON 为实验性兼容导出，发布前请在目标平台验证。"
       )
     );
-  }
-  if (format === "v3_json") {
-    checks.push(check("v3-experimental", "warning", "format", "V3 JSON 为实验性兼容导出，发布前请在目标平台验证。"));
   }
 
   checks.push(...targetCompatibilityChecks(project, target, format, character));
@@ -123,7 +129,7 @@ export function buildExportPreflightReport(input: {
     target,
     characterName: character?.name,
     worldBookName: worldBook?.name,
-    imageName: imageAsset?.name,
+    imageName: format === "v2_png" && pngImageAssets.length > 1 ? `${pngImageAssets.length} 张图片` : reportImageAsset?.name,
     summary: {
       blockers,
       warnings,
@@ -182,9 +188,9 @@ function addCharacterDependencies(
   project: CardProject,
   character: InternalCharacter,
   worldBook: InternalWorldBook | undefined,
-  imageAsset: Asset | undefined,
   format: ExportFormat,
-  target: ExportTarget
+  target: ExportTarget,
+  imageAssets: Asset[]
 ) {
   if (worldBook) {
     dependencies.push({
@@ -194,11 +200,11 @@ function addCharacterDependencies(
       evidence: `${worldBook.entries.length} 条世界书条目`
     });
   }
-  if (imageAsset) {
+  for (const imageAsset of imageAssets) {
     dependencies.push({
       type: "asset",
       label: imageAsset.name,
-      status: format === "v2_png" || format === "avatar_png" || format === "v3_json" ? "included" : "referenced",
+      status: format === "v2_png" || format === "avatar_png" || format === "v3_json" || format === "charx" ? "included" : "referenced",
       evidence: imageAsset.purpose ? `用途：${imageAsset.purpose}` : "导出图片"
     });
   }
@@ -315,6 +321,45 @@ function check(
   evidence?: string
 ): ExportCheck {
   return { id, level, category, message, evidence };
+}
+
+function pngImageAssetChecks(assets: Asset[], format: "v2_png" | "avatar_png"): ExportCheck[] {
+  const checks: ExportCheck[] = [];
+  const multiple = assets.length > 1;
+  for (const asset of assets) {
+    const suffix = multiple ? `-${asset.id}` : "";
+    if (!asset.dataUrl) {
+      checks.push(
+        check(
+          `image-no-data${suffix}`,
+          "blocker",
+          "asset",
+          multiple
+            ? `批量图片「${asset.name}」缺少 dataUrl，无法写入 V2 metadata。`
+            : format === "avatar_png"
+              ? "所选图片缺少 dataUrl，无法导出头像 PNG。"
+              : "所选图片缺少 dataUrl，无法写入 PNG metadata。"
+        )
+      );
+      continue;
+    }
+    if (!isPngAsset(asset)) {
+      checks.push(
+        check(
+          `image-not-png${suffix}`,
+          "blocker",
+          "asset",
+          multiple
+            ? `批量图片「${asset.name}」不是 PNG，无法写入 V2 metadata。`
+            : format === "avatar_png"
+              ? "头像 PNG 导出需要 PNG 图片，请换用 PNG 资源。"
+              : "V2 PNG metadata 只能写入 PNG 图片，请换用 PNG 资源。",
+          asset.mimeType || asset.dataUrl.slice(0, 32)
+        )
+      );
+    }
+  }
+  return checks;
 }
 
 function isPngAsset(asset: Asset): boolean {

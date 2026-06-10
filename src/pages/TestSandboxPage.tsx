@@ -4,10 +4,12 @@ import { maybeAIInvocationLog, runLoggedCompletion } from "../core/ai/logging";
 import { diagnoseTestWithAI } from "../core/ai/operations";
 import { buildPresetMessages, resolveAIForTask } from "../core/ai/presets";
 import { buildTestPrompt } from "../core/prompt-builder/buildPrompt";
-import type { ChatMessage, PromptChainSection, QualityIssue, TestSessionStatus } from "../core/schema/types";
+import type { ChatMessage, PromptChainSection, QualityIssue, TestSessionStatus, VariableUpdateLog } from "../core/schema/types";
 import { checkCharacterQuality } from "../core/quality/checks";
 import { buildABComparisonReport } from "../core/tester/ab";
 import { builtInTestCases, evaluateBuiltInTestCase, renderBuiltInTestCasePrompt } from "../core/tester/cases";
+import { buildVariableUpdateLogFromText } from "../core/tester/variables";
+import { applyVariableDiffs } from "../core/variable-system/mvu";
 import { snapshotCharacterData } from "../core/version/diff";
 import { getCurrentProject, useAppStore } from "../stores/useAppStore";
 
@@ -39,6 +41,7 @@ export function TestSandboxPage() {
   const [customCaseTags, setCustomCaseTags] = useState("custom");
   const [failureNotes, setFailureNotes] = useState("");
   const [copiedSectionId, setCopiedSectionId] = useState("");
+  const [pendingVariableUpdate, setPendingVariableUpdate] = useState<VariableUpdateLog | undefined>();
   const [busy, setBusy] = useState(false);
   if (!project) return null;
   const activeProject = project;
@@ -88,9 +91,14 @@ export function TestSandboxPage() {
       const { content: reply, log } = await runLoggedCompletion(provider, routedMessages, "testChat", preset?.paramsOverride);
       state.addAIInvocationLog(log);
       const nextMessages: ChatMessage[] = [...messages, { role: "user", content: input }, { role: "assistant", content: reply }];
-      const localDiagnostics = buildLocalDiagnostics(reply, built.triggeredEntries);
+      const variableLog = buildVariableUpdateLogFromText(reply, activeProject.advanced.variableSystem.state, {
+        source: "assistant",
+        messageIndex: nextMessages.length - 1
+      });
+      const localDiagnostics = buildLocalDiagnostics(reply, built.triggeredEntries, variableLog);
       setMessages(nextMessages);
       setDiagnostics(localDiagnostics);
+      setPendingVariableUpdate(variableLog);
       state.addTestSession({
         name: `${character.name} 测试 ${new Date().toLocaleString()}`,
         characterId: character.id,
@@ -101,6 +109,7 @@ export function TestSandboxPage() {
         promptPreview: built.prompt,
         promptSections: built.promptSections,
         diagnostics: localDiagnostics,
+        variableUpdates: variableLog ? [variableLog] : [],
         ...testCaseSessionMeta(localDiagnostics)
       });
       setInput("");
@@ -125,6 +134,7 @@ export function TestSandboxPage() {
       promptPreview: built.prompt,
       promptSections: built.promptSections,
       diagnostics: localDiagnostics,
+      variableUpdates: pendingVariableUpdate ? [pendingVariableUpdate] : [],
       ...testCaseSessionMeta(localDiagnostics)
     });
   }
@@ -142,6 +152,7 @@ export function TestSandboxPage() {
       promptPreview: built.prompt,
       promptSections: built.promptSections,
       diagnostics: localDiagnostics,
+      variableUpdates: pendingVariableUpdate ? [pendingVariableUpdate] : [],
       ...testCaseSessionMeta(localDiagnostics, "failed", failureNotes.trim() || "人工标记为失败样本。")
     });
   }
@@ -177,6 +188,7 @@ export function TestSandboxPage() {
         promptPreview: built.prompt,
         promptSections: built.promptSections,
         diagnostics: merged,
+        variableUpdates: pendingVariableUpdate ? [pendingVariableUpdate] : [],
         ...testCaseSessionMeta(merged, selectedCaseName ? "needs_review" : "untagged")
       });
     } catch (error) {
@@ -195,10 +207,24 @@ export function TestSandboxPage() {
     if (selectedCustomCase) setInput(selectedCustomCase.prompt);
   }
 
-  function buildLocalDiagnostics(reply: string, triggeredEntries = built?.triggeredEntries ?? []): QualityIssue[] {
+  function buildLocalDiagnostics(
+    reply: string,
+    triggeredEntries = built?.triggeredEntries ?? [],
+    variableLog?: VariableUpdateLog
+  ): QualityIssue[] {
     const base = character ? checkCharacterQuality(character, worldBook) : [];
-    if (!reply.trim()) return base;
-    if (selectedBuiltInCase) return [...base, ...evaluateBuiltInTestCase(selectedBuiltInCase, reply, triggeredEntries)];
+    const variableIssues = variableLog
+      ? [
+          {
+            id: `variable_update_${variableLog.createdAt}`,
+            level: "info" as const,
+            scope: "variables",
+            message: `识别到 ${variableLog.diffs.length} 条变量更新，应用前请在变量更新日志中确认。`
+          }
+        ]
+      : [];
+    if (!reply.trim()) return [...base, ...variableIssues];
+    if (selectedBuiltInCase) return [...base, ...evaluateBuiltInTestCase(selectedBuiltInCase, reply, triggeredEntries), ...variableIssues];
     if (selectedCustomCase) {
       return [
         ...base,
@@ -207,10 +233,11 @@ export function TestSandboxPage() {
           level: "info",
           scope: `test:${selectedCustomCase.id}`,
           message: `自定义用例「${selectedCustomCase.name}」已运行，请对照期望人工复核。`
-        }
+        },
+        ...variableIssues
       ];
     }
-    return base;
+    return [...base, ...variableIssues];
   }
 
   function lastAssistantReply(): string {
@@ -295,6 +322,44 @@ export function TestSandboxPage() {
     if (log) state.addAIInvocationLog(log);
   }
 
+  function applyPendingVariableUpdate() {
+    const currentProject = getCurrentProject(useAppStore.getState());
+    if (!currentProject || !pendingVariableUpdate || pendingVariableUpdate.applied) return;
+    const variableSystem = currentProject.advanced.variableSystem;
+    const result = applyVariableDiffs(variableSystem.state, pendingVariableUpdate.diffs);
+    const appliedLog: VariableUpdateLog = {
+      ...pendingVariableUpdate,
+      diffs: result.diffs,
+      applied: true
+    };
+    state.updateProject({
+      advanced: {
+        ...currentProject.advanced,
+        variableSystem: {
+          ...variableSystem,
+          state: result.state,
+          history: [
+            {
+              id: `varsnap_${Date.now()}`,
+              label: "测试沙盒变量更新前",
+              state: cloneRecord(variableSystem.state),
+              createdAt: Date.now()
+            },
+            ...variableSystem.history
+          ].slice(0, 20),
+          updatedAt: Date.now()
+        }
+      },
+      tests: currentProject.tests.map((session) => ({
+        ...session,
+        variableUpdates: session.variableUpdates?.map((log) =>
+          log.createdAt === pendingVariableUpdate.createdAt && log.messageIndex === pendingVariableUpdate.messageIndex ? appliedLog : log
+        )
+      }))
+    });
+    setPendingVariableUpdate(appliedLog);
+  }
+
   async function copyText(id: string, text: string) {
     try {
       await navigator.clipboard.writeText(text);
@@ -353,6 +418,7 @@ export function TestSandboxPage() {
               <div className="list-item" key={session.id}>
                 <strong>{session.name}</strong>
                 <span className="muted">{session.messages.length} 消息 / {session.triggeredEntries.length} 触发</span>
+                {session.variableUpdates?.length ? <span className="muted">变量更新：{session.variableUpdates.reduce((sum, item) => sum + item.diffs.length, 0)} 条</span> : null}
                 <div className="trigger-meta">
                   <span className={`status-chip ${session.status ?? "untagged"}`}>
                     {TEST_STATUS_LABELS[session.status ?? "untagged"]}
@@ -485,7 +551,13 @@ export function TestSandboxPage() {
               <button className="secondary-button" onClick={diagnose} disabled={busy}>
                 <Stethoscope size={17} /> 诊断
               </button>
-              <button className="secondary-button" onClick={() => setMessages([])}>
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  setMessages([]);
+                  setPendingVariableUpdate(undefined);
+                }}
+              >
                 清空
               </button>
             </div>
@@ -544,6 +616,29 @@ export function TestSandboxPage() {
             ))}
             {!built?.triggeredEntries.length && <p className="muted">当前输入未触发世界书。</p>}
           </div>
+          <div className="panel-title" style={{ marginTop: 16 }}>
+            <span>变量更新日志</span>
+          </div>
+          {pendingVariableUpdate ? (
+            <div className="list">
+              <div className="list-item">
+                <strong>{pendingVariableUpdate.applied ? "已应用到 Variable Lab" : "待确认变量更新"}</strong>
+                <span className="muted">
+                  {pendingVariableUpdate.source} / message #{pendingVariableUpdate.messageIndex ?? "-"} / {pendingVariableUpdate.diffs.length} diff
+                </span>
+                {pendingVariableUpdate.diffs.slice(0, 12).map((diff) => (
+                  <span className="muted" key={`${diff.path}-${String(diff.after)}`}>
+                    {diff.operation === "remove" ? "remove" : "set"} {diff.path}: {shortValue(diff.before)} → {shortValue(diff.after)}
+                  </span>
+                ))}
+                <button className="secondary-button" onClick={applyPendingVariableUpdate} disabled={pendingVariableUpdate.applied}>
+                  应用到 Variable Lab
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="muted">AI 回复中若出现 MVU、JSON Patch 或 JSON/YAML 状态块，会在这里显示变量 diff，确认后再写入变量树。</p>
+          )}
           <div className="panel-title" style={{ marginTop: 16 }}>
             <Stethoscope size={18} />
             <span>诊断报告</span>
@@ -630,4 +725,13 @@ function parseTags(text: string): string[] {
     .map((item) => item.trim())
     .filter(Boolean)
     .filter((item, index, tags) => tags.indexOf(item) === index);
+}
+
+function cloneRecord(state: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
+}
+
+function shortValue(value: unknown): string {
+  const text = value === undefined ? "(未设置)" : typeof value === "string" ? value : JSON.stringify(value);
+  return text.length > 80 ? `${text.slice(0, 80)}...` : text;
 }

@@ -19,6 +19,7 @@ import { importFrontendPackageFromFiles, importRegexRulesFromConfig, importScrip
 import { importCharacterJson, importWorldBookJson } from "../src/core/importer/character";
 import { getV2PngBatchImageWarnings } from "../src/core/exporter/batch";
 import { createExportRecord, getV1LossWarnings, toV1Character, toV2Character, toV3Character, toWorldBookJson } from "../src/core/exporter/character";
+import { exportCharacterCharx, importCharacterCharx } from "../src/core/exporter/charx";
 import { buildExportPreflightReport, exportTargets, formatExportReportMarkdown, targetLabel } from "../src/core/exporter/report";
 import { embedV2MetadataInPngDataUrl, extractCharacterFromPngDataUrl } from "../src/core/exporter/pngMetadata";
 import { analyzeWorldBookTrigger, triggerWorldBookEntries } from "../src/core/worldbook/trigger";
@@ -31,14 +32,16 @@ import { buildProjectDirectoryEntries } from "../src/storage/BrowserFileSystemSt
 import { buildPresetMessages, findTaskPreset, missingPresetVariables, renderPromptTemplate, resolveAIForTask } from "../src/core/ai/presets";
 import { summarizeAILogs } from "../src/core/ai/cost";
 import { parseOpenAIStreamText } from "../src/core/ai/client";
-import { parseImageGenerationResponse } from "../src/core/ai/image";
+import { callImageGeneration, parseImageGenerationResponse } from "../src/core/ai/image";
 import { createAIInvocationLog } from "../src/core/ai/logging";
+import { analyzeImageWithAI } from "../src/core/ai/operations";
 import { buildFrontendSandboxPreview } from "../src/core/frontend/sandbox";
 import { buildTestPrompt } from "../src/core/prompt-builder/buildPrompt";
 import { diffCharacters, diffWorldBookSnapshotAgainstCurrent, diffWorldBooks, summarizeDiff } from "../src/core/version/diff";
 import { searchProject } from "../src/core/search/search";
 import { buildABComparisonReport } from "../src/core/tester/ab";
 import { builtInTestCases, evaluateBuiltInTestCase } from "../src/core/tester/cases";
+import { buildVariableUpdateLogFromText } from "../src/core/tester/variables";
 import { isPluginRunnableInCurrentVersion, normalizePluginManifest, pluginSafetyIssues } from "../src/core/plugin-runtime/manifest";
 import { isScriptRunnableInCurrentVersion, scriptSafetyIssues } from "../src/core/script-runtime/safety";
 import { applyVariableDiffs, diffVariables, getPathValue, parseMvuSetCommands, parseStateBlock, parseVariableUpdateCommands, previewVariableDiffs } from "../src/core/variable-system/mvu";
@@ -196,6 +199,17 @@ assert.equal(importedPng.character.originalSource?.format, "v2_png");
 assert.equal(importedPng.report.detected.format, "V2 PNG");
 assert.equal(importedPng.report.importedAsReadonly, false);
 assert.equal(importedPng.embeddedWorldBook?.entries.length, 2);
+assert.ok(importedPng.report.notes.some((note) => note.includes("tEXt")));
+const pngWithInternationalMetadata = await embedV2MetadataInPngDataUrl(onePixelPng, character, worldBook, { chunkType: "iTXt" });
+const importedInternationalPng = extractCharacterFromPngDataUrl(pngWithInternationalMetadata, "lia.itxt.png");
+assert.equal(importedInternationalPng.character.name, "莉娅");
+assert.equal(importedInternationalPng.embeddedWorldBook?.entries.length, 2);
+assert.ok(importedInternationalPng.report.notes.some((note) => note.includes("iTXt")));
+const pngWithCompressedMetadata = await embedV2MetadataInPngDataUrl(onePixelPng, character, worldBook, { chunkType: "zTXt" });
+const importedCompressedPng = extractCharacterFromPngDataUrl(pngWithCompressedMetadata, "lia.ztxt.png");
+assert.equal(importedCompressedPng.character.name, "莉娅");
+assert.equal(importedCompressedPng.embeddedWorldBook?.entries.length, 2);
+assert.ok(importedCompressedPng.report.notes.some((note) => note.includes("zTXt")));
 useAppStore.setState({ projects: [], currentProjectId: undefined, activePage: "projects" });
 useAppStore.getState().createProject("导入保护自检", "advanced");
 const importBackupInitial = getCurrentProject(useAppStore.getState())!;
@@ -350,6 +364,15 @@ const avatarExportRecord = createExportRecord({
   warnings: []
 });
 assert.equal(avatarExportRecord.format, "avatar_png");
+const charxExportRecord = createExportRecord({
+  characterId: character.id,
+  worldBookIds: [worldBook.id],
+  assetIds: ["asset_self_check_cover"],
+  format: "charx",
+  outputPath: "lia.charx",
+  warnings: []
+});
+assert.equal(charxExportRecord.format, "charx");
 
 const exportedWorldBook = toWorldBookJson(worldBook);
 const exportedWorldBookEntries = (exportedWorldBook as { entries: Array<{ extensions?: { cardforge?: { category?: string } } }> }).entries;
@@ -701,6 +724,155 @@ assert.equal(
   parseImageGenerationResponse("custom", { body: { data: [{ url: "https://example.test/image.png" }] } })[0].url,
   "https://example.test/image.png"
 );
+assert.equal(parseImageGenerationResponse("comfyui", { prompt_id: "prompt-self-check" })[0].jobId, "prompt-self-check");
+const originalFetch = globalThis.fetch;
+let visionRequestBody: { messages?: Array<{ content?: unknown }> } = {};
+globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+  visionRequestBody = init?.body ? JSON.parse(String(init.body)) as { messages?: Array<{ content?: unknown }> } : {};
+  return new Response(
+    JSON.stringify({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              description: "雪国药师头像，白发、蓝色光源、适合角色卡头像。",
+              tags: ["药师", "雪国", "头像"],
+              purpose: "avatar",
+              characterHints: ["冷静", "医者"],
+              promptHints: ["white hair", "blue rim light"],
+              notes: "适合作为莉娅头像。"
+            })
+          }
+        }
+      ],
+      usage: { prompt_tokens: 120, completion_tokens: 48, total_tokens: 168 }
+    }),
+    {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    }
+  );
+}) as typeof fetch;
+const visionProvider = {
+  ...provider,
+  baseUrl: "https://vision.example/v1",
+  proxyUrl: "",
+  defaultModel: "vision-self-check",
+  capabilities: ["chat", "json", "vision"] as typeof provider.capabilities,
+  defaultTaskTypes: ["imageUnderstanding"]
+};
+const imageUnderstanding = await analyzeImageWithAI(visionProvider, {
+  assetName: "lia-cover.png",
+  mimeType: "image/png",
+  dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+  currentTags: ["导出封面"],
+  currentPurpose: "cover"
+});
+globalThis.fetch = originalFetch;
+assert.equal(imageUnderstanding.parsed?.purpose, "avatar");
+assert.ok(imageUnderstanding.parsed?.tags.includes("雪国"));
+assert.equal(imageUnderstanding.log?.taskType, "imageUnderstanding");
+assert.ok(Array.isArray(visionRequestBody.messages?.[1]?.content));
+assert.ok((visionRequestBody.messages?.[1]?.content as Array<{ type?: string }>).some((part) => part.type === "image_url"));
+let comfyRequest: { endpoint?: string; body?: Record<string, unknown>; headers?: Record<string, string> } = {};
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  comfyRequest = {
+    endpoint: String(input),
+    body: init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined,
+    headers: init?.headers as Record<string, string> | undefined
+  };
+  return new Response(JSON.stringify({ prompt_id: "queued-123" }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
+  });
+}) as typeof fetch;
+const comfyProvider = createProviderDraft();
+comfyProvider.providerType = "comfyui";
+comfyProvider.baseUrl = "http://127.0.0.1:8188";
+comfyProvider.defaultTaskTypes = ["imageGeneration"];
+comfyProvider.headers = {
+  "X-CardForge-ComfyUI-Workflow": JSON.stringify({
+    "1": {
+      class_type: "CLIPTextEncode",
+      inputs: { text: "{{prompt}}" }
+    },
+    "2": {
+      class_type: "EmptyLatentImage",
+      inputs: { width: "{{width}}", height: "{{height}}" }
+    }
+  }),
+  "X-CardForge-ComfyUI-Client-Id": "self-check-client"
+};
+const comfyImages = await callImageGeneration(comfyProvider, {
+  prompt: "moon herb portrait",
+  width: 640,
+  height: 768
+});
+globalThis.fetch = originalFetch;
+assert.equal(comfyImages[0].jobId, "queued-123");
+assert.equal(comfyRequest.endpoint, "http://127.0.0.1:8188/prompt");
+assert.equal((comfyRequest.body?.prompt as Record<string, { inputs?: Record<string, unknown> }>)["1"].inputs?.text, "moon herb portrait");
+assert.equal((comfyRequest.body?.prompt as Record<string, { inputs?: Record<string, unknown> }>)["2"].inputs?.width, "640");
+assert.equal(comfyRequest.body?.client_id, "self-check-client");
+assert.equal(comfyRequest.headers?.["X-CardForge-ComfyUI-Workflow"], undefined);
+let comfyPollingPromptHeaders: Record<string, string> | undefined;
+const comfyPollingRequests: string[] = [];
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const endpoint = String(input);
+  comfyPollingRequests.push(`${init?.method ?? "GET"} ${endpoint}`);
+  if (endpoint.endsWith("/prompt")) {
+    comfyPollingPromptHeaders = init?.headers as Record<string, string> | undefined;
+    return new Response(JSON.stringify({ prompt_id: "queued-polled" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+  if (endpoint.endsWith("/history/queued-polled")) {
+    return new Response(
+      JSON.stringify({
+        "queued-polled": {
+          outputs: {
+            "9": {
+              images: [{ filename: "lia_00001_.png", subfolder: "CardForge", type: "output" }]
+            }
+          }
+        }
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      }
+    );
+  }
+  if (endpoint.includes("/view?")) {
+    return new Response(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), {
+      status: 200,
+      headers: { "Content-Type": "image/png" }
+    });
+  }
+  return new Response("not found", { status: 404 });
+}) as typeof fetch;
+const comfyPollingProvider = {
+  ...comfyProvider,
+  headers: {
+    ...comfyProvider.headers,
+    "X-CardForge-ComfyUI-Poll-Attempts": "2",
+    "X-CardForge-ComfyUI-Poll-Interval-Ms": "1"
+  }
+};
+const comfyPolledImages = await callImageGeneration(comfyPollingProvider, {
+  prompt: "moon herb final portrait",
+  width: 640,
+  height: 768
+});
+globalThis.fetch = originalFetch;
+assert.equal(comfyPolledImages[0].jobId, "queued-polled");
+assert.equal(comfyPolledImages[0].provider, "comfyui");
+assert.ok(comfyPolledImages[0].url?.startsWith("http://127.0.0.1:8188/view?"));
+assert.ok(comfyPolledImages[0].dataUrl?.startsWith("data:image/png;base64,"));
+assert.ok(comfyPollingRequests.some((request) => request.includes("/history/queued-polled")));
+assert.ok(comfyPollingRequests.some((request) => request.includes("/view?")));
+assert.equal(comfyPollingPromptHeaders?.["X-CardForge-ComfyUI-Poll-Attempts"], undefined);
 const aiLog = createAIInvocationLog({
   provider,
   taskType: "selfCheck",
@@ -747,6 +919,24 @@ const coverAsset: Asset = {
   createdAt: Date.now(),
   updatedAt: Date.now()
 };
+const charxCharacter = { ...character, avatarAssetId: coverAsset.id };
+const charxPackage = exportCharacterCharx({ character: charxCharacter, worldBook, assets: [coverAsset] });
+const charxFiles = unzipSync(charxPackage);
+assert.ok(charxFiles["manifest.json"]);
+assert.ok(charxFiles["card.json"]);
+assert.ok(charxFiles["card.v2.json"]);
+assert.ok(charxFiles["assets/manifest.json"]);
+assert.ok(Object.keys(charxFiles).some((path) => path.startsWith("assets/files/") && path.endsWith(".png")));
+const charxCard = JSON.parse(new TextDecoder().decode(charxFiles["card.json"])) as { spec?: string };
+assert.equal(charxCard.spec, "chara_card_v3");
+const importedCharx = importCharacterCharx(charxPackage, "lia.charx");
+assert.equal(importedCharx.character.name, "莉娅");
+assert.equal(importedCharx.character.originalSource?.format, "charx");
+assert.equal(importedCharx.embeddedWorldBook?.entries.length, 2);
+assert.equal(importedCharx.importedAssets?.length, 1);
+assert.equal(importedCharx.importedAssets?.[0].linkedCharacterIds[0], importedCharx.character.id);
+assert.equal(importedCharx.character.avatarAssetId, importedCharx.importedAssets?.[0].id);
+assert.ok(importedCharx.report.notes.some((note) => note.includes("CHARX")));
 const failedTestSession: TestSession = {
   id: "test_self_check_failure",
   name: "莉娅 失败样本",
@@ -886,6 +1076,30 @@ const yamlState = parseStateBlock("relationships:\n  lia:\n    affection: 41\npl
 assert.equal(getPathValue(yamlState, "relationships.lia.affection"), 41);
 const yamlDiffs = parseVariableUpdateCommands("```yaml\nrelationships:\n  lia:\n    affection: 41\nplayer:\n  hp: 88\n```", variableState);
 assert.ok(yamlDiffs.some((diff) => diff.path === "relationships.lia.affection" && diff.after === 41));
+const testVariableLog = buildVariableUpdateLogFromText("状态更新：_.set('relationships.lia.affection', 55)", variableState, {
+  source: "assistant",
+  messageIndex: 1,
+  createdAt: 1234
+});
+assert.ok(testVariableLog);
+assert.equal(testVariableLog.diffs[0].before, 20);
+assert.equal(testVariableLog.diffs[0].after, 55);
+assert.equal(testVariableLog.applied, false);
+const variableLogApplied = applyVariableDiffs(variableState, testVariableLog.diffs);
+assert.equal(getPathValue(variableLogApplied.state, "relationships.lia.affection"), 55);
+useAppStore.getState().addTestSession({
+  name: "变量更新日志自检",
+  characterId: character.id,
+  messages: [
+    { role: "user", content: "推进关系" },
+    { role: "assistant", content: "状态更新：_.set('relationships.lia.affection', 55)" }
+  ],
+  triggeredEntries: [],
+  promptPreview: "test prompt",
+  diagnostics: [],
+  variableUpdates: [testVariableLog]
+});
+assert.equal(getCurrentProject(useAppStore.getState())?.tests[0].variableUpdates?.[0].diffs[0].path, "relationships.lia.affection");
 const packagedVersions = [
   {
     id: "version_packaged_character",
@@ -1007,6 +1221,16 @@ const exportReport = buildExportPreflightReport({
 });
 assert.equal(exportReport.summary.dependencies >= 2, true);
 assert.ok(formatExportReportMarkdown(exportReport).includes("依赖说明"));
+const charxPreflightReport = buildExportPreflightReport({
+  project: unpacked,
+  format: "charx",
+  target: "cardforge_native",
+  character,
+  worldBook,
+  imageAsset: coverAsset
+});
+assert.ok(charxPreflightReport.checks.some((item) => item.message.includes("CHARX")));
+assert.ok(charxPreflightReport.dependencies.some((item) => item.type === "asset" && item.status === "included"));
 const untrustedSecurityReport = buildExportPreflightReport({
   project: {
     ...unpacked,
@@ -1058,6 +1282,36 @@ const jpegPngReport = buildExportPreflightReport({
   imageAsset: jpegCoverAsset
 });
 assert.ok(jpegPngReport.checks.some((item) => item.id === "image-not-png" && item.level === "blocker"));
+const batchPngReport = buildExportPreflightReport({
+  project: unpacked,
+  format: "v2_png",
+  target: "sillytavern_v2",
+  character,
+  worldBook,
+  imageAsset: jpegCoverAsset,
+  imageAssets: [coverAsset]
+});
+assert.equal(batchPngReport.checks.some((item) => item.id === "image-not-png"), false);
+assert.ok(batchPngReport.dependencies.some((item) => item.type === "asset" && item.label === coverAsset.name));
+const mixedBatchPngReport = buildExportPreflightReport({
+  project: unpacked,
+  format: "v2_png",
+  target: "sillytavern_v2",
+  character,
+  worldBook,
+  imageAssets: [coverAsset, jpegCoverAsset]
+});
+assert.equal(mixedBatchPngReport.imageName, "2 张图片");
+assert.ok(mixedBatchPngReport.checks.some((item) => item.id.startsWith("image-not-png-") && item.message.includes(jpegCoverAsset.name)));
+const missingDataBatchPngReport = buildExportPreflightReport({
+  project: unpacked,
+  format: "v2_png",
+  target: "sillytavern_v2",
+  character,
+  worldBook,
+  imageAssets: [{ ...coverAsset, id: "asset_missing_batch_data", dataUrl: undefined }]
+});
+assert.ok(missingDataBatchPngReport.checks.some((item) => item.id === "image-no-data" && item.level === "blocker"));
 const avatarPngReport = buildExportPreflightReport({
   project: unpacked,
   format: "avatar_png",

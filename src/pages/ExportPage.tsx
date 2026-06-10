@@ -8,15 +8,15 @@ import {
   toV3Character,
   toWorldBookJson
 } from "../core/exporter/character";
-import { getV2PngBatchImageWarnings } from "../core/exporter/batch";
+import { exportCharacterCharx, importCharacterCharx } from "../core/exporter/charx";
 import { buildExportPreflightReport, exportTargets, formatExportReportMarkdown, targetLabel } from "../core/exporter/report";
 import { embedV2MetadataInPngDataUrl, extractCharacterFromPngDataUrl } from "../core/exporter/pngMetadata";
 import { importCharacterJson, type ImportCharacterResult } from "../core/importer/character";
 import type { Asset, CompatibilityReport, CompatibilityTarget, InternalCharacter, VersionSnapshot } from "../core/schema/types";
 import { getCurrentProject, useAppStore } from "../stores/useAppStore";
-import { downloadDataUrl, downloadTextFile, readFileAsDataUrl, readFileAsText, safeFileName } from "../utils/file";
+import { downloadBytesFile, downloadDataUrl, downloadTextFile, readFileAsArrayBuffer, readFileAsDataUrl, readFileAsText, safeFileName } from "../utils/file";
 
-type Format = "v1_json" | "v2_json" | "v3_json" | "v2_png" | "avatar_png" | "worldbook_json";
+type Format = "v1_json" | "v2_json" | "v3_json" | "charx" | "v2_png" | "avatar_png" | "worldbook_json";
 
 export function ExportPage() {
   const state = useAppStore();
@@ -61,12 +61,12 @@ export function ExportPage() {
     target,
     character: exportCharacter,
     worldBook,
-    imageAsset
+    imageAsset: format === "v2_png" ? batchImageAssets[0] ?? imageAsset : imageAsset,
+    imageAssets: format === "v2_png" ? batchImageAssets : undefined
   });
   const warnings = preflight.checks
     .filter((item) => item.level === "warning" || item.level === "blocker")
-    .map((item) => item.message)
-    .concat(getV2PngBatchImageWarnings(batchImageAssets));
+    .map((item) => item.message);
 
   async function exportNow() {
     if (!exportCharacter && format !== "worldbook_json") {
@@ -116,6 +116,32 @@ export function ExportPage() {
           .filter((asset) => asset.linkedCharacterIds.includes(exportCharacter.id) || asset.id === exportCharacter.avatarAssetId)
           .map((asset) => asset.id);
         downloadTextFile(fileName, prettyJson(toV3Character(exportCharacter, worldBook, activeProject.assets)));
+        state.addExportRecord(
+          createExportRecord({
+            characterId: exportCharacter.id,
+            characterVersionId: selectedSnapshot?.snapshot.id,
+            worldBookIds: worldBook ? [worldBook.id] : [],
+            assetIds,
+            format,
+            outputPath: fileName,
+            warnings
+          })
+        );
+      }
+      if (format === "charx" && exportCharacter) {
+        const fileName = `${safeFileName(exportCharacter.name)}${versionSuffix}.charx`;
+        const assetIds = activeProject.assets
+          .filter((asset) => asset.linkedCharacterIds.includes(exportCharacter.id) || asset.id === exportCharacter.avatarAssetId)
+          .map((asset) => asset.id);
+        downloadBytesFile(
+          fileName,
+          exportCharacterCharx({
+            character: exportCharacter,
+            worldBook,
+            assets: activeProject.assets
+          }),
+          "application/zip"
+        );
         state.addExportRecord(
           createExportRecord({
             characterId: exportCharacter.id,
@@ -211,10 +237,15 @@ export function ExportPage() {
 
   async function importJson(file: File) {
     try {
+      if (isCharxFile(file)) {
+        const bytes = new Uint8Array(await readFileAsArrayBuffer(file));
+        handleCharacterImportResult(importCharacterCharx(bytes, file.name), file.name);
+        return;
+      }
       const text = await readFileAsText(file);
       handleCharacterImportResult(importCharacterJson(JSON.parse(text), file.name), file.name);
     } catch (error) {
-      setMessage(`角色 JSON 导入失败：${error instanceof Error ? error.message : String(error)}。现有角色未被修改。`);
+      setMessage(`角色 JSON/CHARX 导入失败：${error instanceof Error ? error.message : String(error)}。现有角色未被修改。`);
     }
   }
 
@@ -364,6 +395,7 @@ export function ExportPage() {
               <select value={format} onChange={(event) => setFormat(event.target.value as Format)}>
                 <option value="v2_json">Character Card V2 JSON</option>
                 <option value="v3_json">Character Card V3 JSON（实验）</option>
+                <option value="charx">CHARX 角色资源包（基础）</option>
                 <option value="v1_json">Character Card V1 JSON</option>
                 <option value="v2_png">Character Card V2 PNG</option>
                 <option value="avatar_png">角色头像 PNG</option>
@@ -449,8 +481,8 @@ export function ExportPage() {
           </div>
           <div className="form-grid">
             <label className="secondary-button">
-              <FileJson size={17} /> 导入 V1/V2 JSON
-              <input hidden type="file" accept="application/json,.json" onChange={(event) => event.target.files?.[0] && importJson(event.target.files[0])} />
+              <FileJson size={17} /> 导入 JSON/CHARX
+              <input hidden type="file" accept="application/json,.json,.charx,application/zip" onChange={(event) => event.target.files?.[0] && importJson(event.target.files[0])} />
             </label>
             <label className="secondary-button">
               <ImageDown size={17} /> 导入 V2 PNG
@@ -584,4 +616,8 @@ function compatibilityFeatureLabels(report: CompatibilityReport): string[] {
   if (report.detected.frontend) labels.push("前端 UI");
   if (report.detected.extensions) labels.push("扩展字段");
   return labels.length ? labels : ["未检测到重型依赖"];
+}
+
+function isCharxFile(file: File): boolean {
+  return file.name.toLowerCase().endsWith(".charx");
 }

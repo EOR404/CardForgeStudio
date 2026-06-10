@@ -9,6 +9,15 @@ export type AICompletionResult = {
   totalTokens: number;
 };
 
+export type OpenAICompatibleMessageContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" | "auto" } };
+
+export type OpenAICompatibleMessage = {
+  role: "system" | "user" | "assistant";
+  content: string | OpenAICompatibleMessageContentPart[];
+};
+
 export async function callOpenAICompatible(
   config: AIProviderConfig,
   messages: ChatMessage[],
@@ -21,6 +30,14 @@ export async function callOpenAICompatible(
 export async function callOpenAICompatibleDetailed(
   config: AIProviderConfig,
   messages: ChatMessage[],
+  params: Partial<AIProviderConfig["defaultParams"]> = {}
+): Promise<AICompletionResult> {
+  return callOpenAICompatibleMessagesDetailed(config, messages, params);
+}
+
+export async function callOpenAICompatibleMessagesDetailed(
+  config: AIProviderConfig,
+  messages: OpenAICompatibleMessage[],
   params: Partial<AIProviderConfig["defaultParams"]> = {}
 ): Promise<AICompletionResult> {
   if (!config.baseUrl) throw new Error("Provider 缺少 Base URL。");
@@ -200,6 +217,14 @@ function unwrapProxyText(text: string): string {
   }
 }
 
-function estimateMessageTokens(messages: ChatMessage[]): number {
-  return messages.reduce((sum, message) => sum + estimateTokens(message.content) + 4, 0);
+function estimateMessageTokens(messages: OpenAICompatibleMessage[]): number {
+  return messages.reduce((sum, message) => sum + estimateContentTokens(message.content) + 4, 0);
+}
+
+function estimateContentTokens(content: OpenAICompatibleMessage["content"]): number {
+  if (typeof content === "string") return estimateTokens(content);
+  return content.reduce((sum, part) => {
+    if (part.type === "text") return sum + estimateTokens(part.text);
+    return sum + 85;
+  }, 0);
 }

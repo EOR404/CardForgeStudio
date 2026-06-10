@@ -583,6 +583,7 @@ function applyCharacterImport(project: CardProject, result: ImportCharacterResul
         ? { ...result.character, linkedVariableSystem: project.advanced.variableSystem.id }
         : result.character
     ],
+    assets: result.importedAssets?.length ? [...project.assets, ...result.importedAssets] : project.assets,
     worldBooks: result.embeddedWorldBook ? [...project.worldBooks, result.embeddedWorldBook] : project.worldBooks,
     advanced: {
       ...project.advanced,

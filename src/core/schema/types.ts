@@ -82,7 +82,7 @@ export type InternalCharacter = {
 };
 
 export type ImportedSource = {
-  format: "v1" | "v2" | "v2_png" | "v3" | "worldbook" | "unknown";
+  format: "v1" | "v2" | "v2_png" | "v3" | "charx" | "worldbook" | "unknown";
   fileName?: string;
   raw: unknown;
   importedAt: number;
@@ -290,11 +290,25 @@ export type TestSession = {
   promptPreview: string;
   promptSections?: PromptChainSection[];
   diagnostics: QualityIssue[];
+  variableUpdates?: VariableUpdateLog[];
   createdAt: number;
   updatedAt: number;
 };
 
 export type TestSessionStatus = "untagged" | "passed" | "failed" | "needs_review";
+
+export type VariableUpdateLog = {
+  source: "assistant" | "manual";
+  messageIndex?: number;
+  diffs: Array<{
+    path: string;
+    before: unknown;
+    after: unknown;
+    operation?: "set" | "remove";
+  }>;
+  applied: boolean;
+  createdAt: number;
+};
 
 export type CustomTestCase = {
   id: string;
@@ -375,7 +389,7 @@ export type ExportRecord = {
   characterVersionId?: string;
   worldBookIds: string[];
   assetIds: string[];
-  format: "v1_json" | "v2_json" | "v3_json" | "v2_png" | "avatar_png" | "worldbook_json" | "project_json";
+  format: "v1_json" | "v2_json" | "v3_json" | "charx" | "v2_png" | "avatar_png" | "worldbook_json" | "project_json";
   outputPath: string;
   warnings: string[];
   createdAt: number;

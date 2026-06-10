@@ -1,5 +1,6 @@
 import { createCharacterDraft, createFrontendPackageDraft, createRegexRuleDraft, createScriptDraft, createWorldBookDraft, createWorldBookEntryDraft, uid } from "../schema/defaults";
 import type {
+  Asset,
   CardScript,
   FrontendCardPackage,
   ImportedSource,
@@ -20,6 +21,7 @@ export type ImportCharacterResult = {
   importedScripts?: CardScript[];
   importedRegexRules?: RegexRule[];
   importedVariableState?: Record<string, unknown>;
+  importedAssets?: Asset[];
   report: ReturnType<typeof scanCompatibility>;
 };
 
