@@ -9,6 +9,7 @@ import { diffWorldBookSnapshotAgainstCurrent, summarizeDiff } from "../core/vers
 import { analyzeWorldBookTrigger } from "../core/worldbook/trigger";
 import { categoryLabel, classifyWorldBookEntry, worldBookCategories } from "../core/worldbook/classify";
 import { normalizeWorldBookEntryCandidate } from "../core/worldbook/normalize";
+import { extractWorldBookEntriesFromText } from "../core/worldbook/textImport";
 import type {
   WorldBookEntry,
   WorldBookEntryCategory,
@@ -63,6 +64,17 @@ export function WorldBookPage() {
     }
   }
 
+  async function importSourceText(file: File) {
+    try {
+      const text = await readFileAsText(file);
+      setSourceText(text);
+      splitSourceText(text, file.name);
+      setImportStatus(`已读取长设定文本：${file.name}。请检查右侧条目草案后应用。`);
+    } catch (error) {
+      setImportStatus(`文本导入失败：${error instanceof Error ? error.message : String(error)}。现有世界书未被修改。`);
+    }
+  }
+
   function updateEntry(patch: Partial<WorldBookEntry>) {
     if (!worldBook || !selectedEntry) return;
     state.updateWorldBookEntry(worldBook.id, selectedEntry.id, patch);
@@ -103,6 +115,19 @@ export function WorldBookPage() {
     }
   }
 
+  function splitSourceText(text = sourceText, sourceName = "粘贴文本") {
+    if (!text.trim()) return alert("请先粘贴或导入长设定文本。");
+    const entries = extractWorldBookEntriesFromText(text, { sourceName });
+    if (!entries.length) {
+      setExtractionError("本地拆分没有得到可用条目，请补充分段、标题或更完整的设定文本。");
+      setExtractedEntries([]);
+      return;
+    }
+    setExtractedEntries(entries);
+    setExtractionError("");
+    setExtractionRaw(`本地拆分 ${entries.length} 条；不会调用 AI，也不会自动写入世界书。`);
+  }
+
   function applyExtractedEntries() {
     if (!worldBook || !extractedEntries.length) return;
     for (const entry of extractedEntries) {
@@ -136,6 +161,10 @@ export function WorldBookPage() {
           <label className="secondary-button">
             <FileJson size={17} /> 导入
             <input hidden type="file" accept="application/json,.json" onChange={(event) => event.target.files?.[0] && importBook(event.target.files[0])} />
+          </label>
+          <label className="secondary-button">
+            <FileJson size={17} /> 导入文本设定
+            <input hidden type="file" accept="text/plain,text/markdown,.txt,.md" onChange={(event) => event.target.files?.[0] && importSourceText(event.target.files[0])} />
           </label>
           {worldBook && (
             <button
@@ -323,6 +352,9 @@ export function WorldBookPage() {
             <textarea value={sourceText} onChange={(event) => setSourceText(event.target.value)} />
           </label>
           <div className="toolbar" style={{ marginTop: 10 }}>
+            <button className="secondary-button" onClick={() => splitSourceText()}>
+              本地拆分条目
+            </button>
             <button className="primary-button" onClick={extractEntries} disabled={busy}>
               抽取世界书条目
             </button>

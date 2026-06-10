@@ -20,6 +20,7 @@ import { useState } from "react";
 import type { AppPage, ProjectMode } from "../core/schema/types";
 import { characterTokenBreakdown } from "../core/prompt-builder/buildPrompt";
 import { checkCharacterQuality } from "../core/quality/checks";
+import { trustLevelLabel } from "../core/security/trust";
 import { BrowserStorage } from "../storage/BrowserStorage";
 import { getCurrentProject, useAppStore } from "../stores/useAppStore";
 
@@ -88,7 +89,7 @@ export function DesktopLayout({ children }: PropsWithChildren) {
         </div>
         <div className="topbar-project">
           <span>{project?.name ?? "未打开项目"}</span>
-          {project && <em>{project.mode === "light" ? "轻量制卡" : "高级工程"}</em>}
+          {project && <em>{project.mode === "light" ? "轻量制卡" : "高级工程"} / {trustLevelLabel(project.trustLevel)}</em>}
         </div>
         <div className="topbar-actions">
           {saveStatus && <span className="save-status">{saveStatus}</span>}

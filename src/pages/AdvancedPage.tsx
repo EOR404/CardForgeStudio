@@ -1,12 +1,14 @@
 import { Braces, ClipboardCheck, Code2, FileJson, FlaskConical, Package, Plus, Puzzle, ScrollText, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { buildFrontendSandboxPreview, type FrontendSandboxEvent } from "../core/frontend/sandbox";
+import { importFrontendPackageFromFiles, importRegexRulesFromConfig, importScriptFile } from "../core/importer/advanced";
 import { normalizePluginManifest, pluginSafetyIssues, isPluginRunnableInCurrentVersion } from "../core/plugin-runtime/manifest";
 import { runRegexPipeline } from "../core/regex/regex";
 import { createFrontendPackageDraft, createPluginDraft, createRegexRuleDraft, createScriptDraft, uid } from "../core/schema/defaults";
-import { applyVariableDiffs, diffVariables, parseMvuSetCommands, previewVariableDiffs } from "../core/variable-system/mvu";
+import { applyVariableDiffs, diffVariables, parseVariableUpdateCommands, previewVariableDiffs } from "../core/variable-system/mvu";
 import type { Asset, CardScript, CompatibilityReport, FrontendCardPackage, InternalWorldBook, PluginManifest, RegexRule, VariableSystem } from "../core/schema/types";
 import { scriptSafetyIssues } from "../core/script-runtime/safety";
+import { canEnableFrontendScripts, canEnableManagedRuntime, trustLevelDescription, trustLevelLabel } from "../core/security/trust";
 import { getCurrentProject, useAppStore } from "../stores/useAppStore";
 import { readFileAsText } from "../utils/file";
 
@@ -190,6 +192,25 @@ function RegexLab() {
     setSelectedRuleId(next.id);
   }
 
+  async function importRegexFile(file: File) {
+    try {
+      const rules = importRegexRulesFromConfig(JSON.parse(await readFileAsText(file)), file.name);
+      if (!rules.length) {
+        alert("没有在文件中识别到可导入的正则规则。");
+        return;
+      }
+      state.updateProject({
+        advanced: {
+          ...project.advanced,
+          regexRules: [...project.advanced.regexRules, ...rules]
+        }
+      });
+      setSelectedRuleId(rules[0].id);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   function updateRule(patch: Partial<RegexRule>) {
     if (!selected) return;
     state.updateRegexRule(selected.id, patch);
@@ -215,6 +236,10 @@ function RegexLab() {
           <button className="primary-button" onClick={addRule}>
             <Plus size={17} /> 新增规则
           </button>
+          <label className="secondary-button">
+            <FileJson size={17} /> 导入正则 JSON
+            <input hidden type="file" accept="application/json,.json" onChange={(event) => event.target.files?.[0] && importRegexFile(event.target.files[0])} />
+          </label>
         </div>
         <div className="list" style={{ marginTop: 12 }}>
           {project.advanced.regexRules.map((rule) => (
@@ -326,8 +351,8 @@ function VariableLab() {
   const project = getCurrentProject(state)!;
   const variableSystem = project.advanced.variableSystem;
   const [json, setJson] = useState(JSON.stringify(variableSystem.state, null, 2));
-  const [aiOutput, setAiOutput] = useState("_.set('relationships.lia.affection', 24)");
-  const commands = parseMvuSetCommands(aiOutput);
+  const [aiOutput, setAiOutput] = useState("_.set('relationships.lia.affection', 24)\n\n或 JSON Patch：\n[{\"op\":\"replace\",\"path\":\"/player/hp\",\"value\":92}]");
+  const commands = parseVariableUpdateCommands(aiOutput, variableSystem.state);
   const commandDiffs = previewVariableDiffs(variableSystem.state, commands);
   const manualDiffs = useMemo(() => {
     try {
@@ -357,7 +382,7 @@ function VariableLab() {
   }
 
   function applyCommands() {
-    if (!commands.length) return alert("没有识别到 _.set / _.assign 命令。");
+    if (!commands.length) return alert("没有识别到 MVU、JSON Patch 或 JSON/YAML 状态块。");
     const result = applyVariableDiffs(variableSystem.state, commands);
     const nextVariableSystem: VariableSystem = {
       ...variableSystem,
@@ -407,9 +432,9 @@ function VariableLab() {
         <button className="primary-button" onClick={saveVariableState}>保存变量状态</button>
       </section>
       <section className="panel">
-        <div className="panel-title">MVU 命令识别</div>
+        <div className="panel-title">变量更新识别</div>
         <label>
-          AI 输出
+          AI 输出 / JSON Patch / YAML 状态块
           <textarea value={aiOutput} onChange={(event) => setAiOutput(event.target.value)} />
         </label>
         <div className="list">
@@ -421,7 +446,7 @@ function VariableLab() {
               </span>
             </div>
           ))}
-          {!commandDiffs.length && <p className="muted">粘贴包含 _.set('path', value) 或 _.assign('path', value) 的文本后，这里会显示变量 diff。</p>}
+          {!commandDiffs.length && <p className="muted">粘贴 MVU 命令、JSON Patch 数组，或 JSON/YAML 状态块后，这里会显示变量 diff。</p>}
         </div>
         <div className="toolbar" style={{ marginTop: 12 }}>
           <button className="primary-button" onClick={applyCommands} disabled={!commands.length}>
@@ -468,7 +493,8 @@ function ScriptManager() {
   const script =
     project.advanced.scripts.find((item) => item.id === selectedScriptId) ??
     project.advanced.scripts[0];
-  const issues = script ? scriptSafetyIssues(script) : [];
+  const canEnableScripts = canEnableManagedRuntime(project.trustLevel);
+  const issues = script ? scriptSafetyIssues(script, project.trustLevel) : [];
 
   function updateScript(patch: Partial<CardScript>) {
     if (!script) return;
@@ -491,6 +517,29 @@ function ScriptManager() {
     setSelectedScriptId(next.id);
   }
 
+  async function importScripts(files: FileList) {
+    try {
+      const imported = (
+        await Promise.all(
+          Array.from(files).map(async (file) => importScriptFile(await readFileAsText(file), file.name))
+        )
+      ).flat();
+      if (!imported.length) {
+        alert("没有在文件中识别到可导入的脚本。");
+        return;
+      }
+      state.updateProject({
+        advanced: {
+          ...project.advanced,
+          scripts: [...project.advanced.scripts, ...imported]
+        }
+      });
+      setSelectedScriptId(imported[0].id);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   function deleteScript() {
     if (!script) return;
     if (!window.confirm(`删除脚本「${script.name}」？`)) return;
@@ -511,6 +560,16 @@ function ScriptManager() {
           <button className="primary-button" onClick={addScript}>
             <Plus size={17} /> 新增脚本
           </button>
+          <label className="secondary-button">
+            <FileJson size={17} /> 导入脚本
+            <input
+              hidden
+              multiple
+              type="file"
+              accept=".json,.js,.mjs,.txt,.stscript,.mvu,.template,.tmpl"
+              onChange={(event) => event.target.files && importScripts(event.target.files)}
+            />
+          </label>
         </div>
         <div className="list">
           {project.advanced.scripts.map((item) => (
@@ -590,13 +649,19 @@ function ScriptManager() {
             </label>
             <div className="toolbar">
               <label>
-                <input type="checkbox" checked={script.enabled} onChange={(event) => updateScript({ enabled: event.target.checked })} /> enabled
+                <input
+                  type="checkbox"
+                  checked={script.enabled}
+                  disabled={!canEnableScripts}
+                  onChange={(event) => canEnableScripts && updateScript({ enabled: event.target.checked })}
+                /> enabled
               </label>
               <button className="danger-button" onClick={deleteScript}>
                 <Trash2 size={17} /> 删除脚本
               </button>
             </div>
             <div className="callout">
+              当前项目信任等级：{trustLevelLabel(project.trustLevel)}。{trustLevelDescription(project.trustLevel)}
               当前版本不会执行脚本；这里只保存草案、权限和兼容性标记。
             </div>
             {issues.length > 0 && (
@@ -658,15 +723,20 @@ function FrontendSandbox() {
   const [events, setEvents] = useState<FrontendSandboxEvent[]>([]);
   const [workerEvents, setWorkerEvents] = useState<FrontendSandboxEvent[]>([]);
   const [manifestText, setManifestText] = useState(JSON.stringify(pkg.manifest, null, 2));
+  const canRunFrontendScripts = canEnableFrontendScripts(project.trustLevel);
+  const previewPackage = useMemo(
+    () => (canRunFrontendScripts ? pkg : { ...pkg, allowScripts: false }),
+    [canRunFrontendScripts, pkg]
+  );
   const preview = useMemo(
     () =>
-      buildFrontendSandboxPreview(pkg, {
+      buildFrontendSandboxPreview(previewPackage, {
         variableState: project.advanced.variableSystem.state,
         worldBook,
         assets: project.assets,
         latestUserInput: sandboxInput
       }),
-    [pkg, project.advanced.variableSystem.state, project.assets, sandboxInput, worldBook]
+    [previewPackage, project.advanced.variableSystem.state, project.assets, sandboxInput, worldBook]
   );
 
   useEffect(() => {
@@ -738,6 +808,29 @@ function FrontendSandbox() {
     });
   }
 
+  async function importFrontendFiles(fileList: FileList) {
+    try {
+      const files = await Promise.all(
+        Array.from(fileList).map(async (file) => ({
+          name: file.name,
+          text: await readFileAsText(file)
+        }))
+      );
+      const nextPackage = importFrontendPackageFromFiles(files);
+      state.updateProject({
+        advanced: {
+          ...project.advanced,
+          frontendPackages: [nextPackage, ...project.advanced.frontendPackages]
+        }
+      });
+      if (character) {
+        state.updateCharacter(character.id, { frontendPackageId: nextPackage.id });
+      }
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   function toggleFrontendAsset(assetId: string) {
     const current = pkg.assetIds ?? [];
     updatePackage({
@@ -753,13 +846,39 @@ function FrontendSandbox() {
             <div className="list-item">
               <strong>未找到前端卡包</strong>
               <span className="muted">可以先创建一个默认沙盒草案。</span>
-              <button className="secondary-button" onClick={createPackage}>
-                新建前端卡包
-              </button>
+              <div className="toolbar">
+                <button className="secondary-button" onClick={createPackage}>
+                  新建前端卡包
+                </button>
+                <label className="secondary-button">
+                  <FileJson size={17} /> 导入前端文件
+                  <input
+                    hidden
+                    multiple
+                    type="file"
+                    accept=".html,.htm,.css,.js,.mjs,.json"
+                    onChange={(event) => event.target.files && importFrontendFiles(event.target.files)}
+                  />
+                </label>
+              </div>
             </div>
           </div>
         )}
         <div className="form-grid">
+          {hasPackage && (
+            <div className="toolbar">
+              <label className="secondary-button">
+                <FileJson size={17} /> 导入前端文件
+                <input
+                  hidden
+                  multiple
+                  type="file"
+                  accept=".html,.htm,.css,.js,.mjs,.json"
+                  onChange={(event) => event.target.files && importFrontendFiles(event.target.files)}
+                />
+              </label>
+            </div>
+          )}
           <div className="form-row">
             <label>
               name
@@ -831,7 +950,20 @@ function FrontendSandbox() {
             JS
             <textarea value={pkg.js} onChange={(event) => updatePackage({ js: event.target.value })} />
           </label>
-          <label><input type="checkbox" checked={pkg.allowScripts} onChange={(event) => updatePackage({ allowScripts: event.target.checked })} /> 允许运行受限 JS</label>
+          <label>
+            <input
+              type="checkbox"
+              checked={pkg.allowScripts}
+              disabled={!canRunFrontendScripts}
+              onChange={(event) => canRunFrontendScripts && updatePackage({ allowScripts: event.target.checked })}
+            /> 允许运行受限 JS
+          </label>
+          <div className={canRunFrontendScripts ? "issue info" : "issue warning"}>
+            <b>信任</b>
+            <span>
+              当前项目：{trustLevelLabel(project.trustLevel)}。{trustLevelDescription(project.trustLevel)}
+            </span>
+          </div>
         </div>
       </section>
       <section className="panel">
@@ -959,7 +1091,7 @@ function FrontendSandbox() {
         </div>
         <iframe
           title="frontend-card-sandbox"
-          sandbox={pkg.allowScripts ? "allow-scripts" : ""}
+          sandbox={previewPackage.allowScripts ? "allow-scripts" : ""}
           srcDoc={preview.srcDoc}
           style={{ width: "100%", minHeight: 420, border: "1px solid var(--line)", borderRadius: 8 }}
         />
@@ -992,7 +1124,8 @@ function PluginManager() {
   const plugin =
     project.advanced.plugins.find((item) => item.id === selectedPluginId) ??
     project.advanced.plugins[0];
-  const issues = plugin ? pluginSafetyIssues(plugin) : [];
+  const canEnablePlugins = canEnableManagedRuntime(project.trustLevel);
+  const issues = plugin ? pluginSafetyIssues(plugin, project.trustLevel) : [];
   const runnable = plugin ? isPluginRunnableInCurrentVersion(plugin) : false;
 
   useEffect(() => {
@@ -1156,13 +1289,19 @@ function PluginManager() {
                 <input type="checkbox" checked={plugin.trusted} onChange={(event) => updatePlugin({ trusted: event.target.checked })} /> trusted
               </label>
               <label>
-                <input type="checkbox" checked={plugin.enabled} onChange={(event) => updatePlugin({ enabled: event.target.checked })} /> enabled
+                <input
+                  type="checkbox"
+                  checked={plugin.enabled}
+                  disabled={!canEnablePlugins}
+                  onChange={(event) => canEnablePlugins && updatePlugin({ enabled: event.target.checked })}
+                /> enabled
               </label>
               <button className="danger-button" onClick={deletePlugin}>
                 <Trash2 size={17} /> 删除插件
               </button>
             </div>
             <div className="callout">
+              当前项目信任等级：{trustLevelLabel(project.trustLevel)}。{trustLevelDescription(project.trustLevel)}
               运行状态：{runnable ? "可运行" : "当前版本仅保存 manifest，不执行插件代码"}。禁止默认开放 apiKey.read、fs.fullAccess、shell.execute、network.fullAccess。
             </div>
             {issues.length > 0 ? (

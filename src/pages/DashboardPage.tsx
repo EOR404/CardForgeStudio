@@ -1,7 +1,10 @@
 import { Boxes, Clock, PackageCheck, Save, Search, ShieldCheck } from "lucide-react";
 import { useMemo, useState } from "react";
+import { exportTargets, targetLabel } from "../core/exporter/report";
 import { projectDashboardIssues } from "../core/quality/checks";
 import { searchProject, type ProjectSearchResult } from "../core/search/search";
+import type { CompatibilityTarget, ProjectTrustLevel } from "../core/schema/types";
+import { projectTrustLevels, trustLevelDescription, trustLevelLabel } from "../core/security/trust";
 import { getCurrentProject, useAppStore } from "../stores/useAppStore";
 
 export function DashboardPage() {
@@ -63,6 +66,53 @@ export function DashboardPage() {
           </section>
         ))}
       </div>
+
+      <section className="panel search-panel" style={{ marginTop: 14 }}>
+        <div className="panel-title">
+          <ShieldCheck size={18} />
+          <span>项目安全与兼容</span>
+        </div>
+        <div className="form-row">
+          <label>
+            默认目标平台
+            <select
+              value={project.compatibilityTarget}
+              onChange={(event) => state.updateProject({ compatibilityTarget: event.target.value as CompatibilityTarget })}
+            >
+              {exportTargets.map((target) => (
+                <option key={target} value={target}>
+                  {targetLabel(target)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            信任等级
+            <select
+              value={project.trustLevel}
+              onChange={(event) => state.updateProject({ trustLevel: event.target.value as ProjectTrustLevel })}
+            >
+              {projectTrustLevels.map((level) => (
+                <option key={level} value={level}>
+                  {trustLevelLabel(level)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="list" style={{ marginTop: 10 }}>
+          <div className="issue info">
+            <b>兼容</b>
+            <span>
+              当前默认：{targetLabel(project.compatibilityTarget)}。导出页会用它生成发布前检查、依赖说明和数据损失提示。
+            </span>
+          </div>
+          <div className={project.trustLevel === "untrusted" ? "issue warning" : "issue info"}>
+            <b>信任</b>
+            <span>{trustLevelDescription(project.trustLevel)}</span>
+          </div>
+        </div>
+      </section>
 
       <section className="panel search-panel" style={{ marginTop: 14 }}>
         <div className="panel-title">

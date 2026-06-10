@@ -1,9 +1,11 @@
-import { Copy, FolderOpen, Import, Plus, Trash2 } from "lucide-react";
+import { BookOpen, Copy, FolderOpen, Import, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { exampleProjects } from "../core/examples/exampleProjects";
 import { sanitizeProjectForExport, prettyJson } from "../core/exporter/character";
+import { exportTargets, targetLabel } from "../core/exporter/report";
 import { exportProjectPackage, importProjectPackage } from "../core/project/package";
-import type { CardProject } from "../core/schema/types";
+import type { CardProject, CompatibilityTarget, ProjectTrustLevel } from "../core/schema/types";
+import { projectTrustLevels, trustLevelDescription, trustLevelLabel } from "../core/security/trust";
 import {
   isFileSystemAccessSupported,
   openProjectFromPickedDirectory,
@@ -17,6 +19,8 @@ export function ProjectsPage() {
   const current = getCurrentProject(state);
   const [name, setName] = useState("新 CardForge 项目");
   const [mode, setMode] = useState<"light" | "advanced">("light");
+  const [trustLevel, setTrustLevel] = useState<ProjectTrustLevel>("untrusted");
+  const [compatibilityTarget, setCompatibilityTarget] = useState<CompatibilityTarget>("sillytavern_v2");
   const [storageStatus, setStorageStatus] = useState("");
 
   async function importProjectFile(file: File) {
@@ -86,7 +90,31 @@ export function ProjectsPage() {
                 <option value="advanced">高级工程</option>
               </select>
             </label>
-            <button className="primary-button" onClick={() => state.createProject(name, mode)}>
+            <label>
+              兼容目标
+              <select
+                value={compatibilityTarget}
+                onChange={(event) => setCompatibilityTarget(event.target.value as CompatibilityTarget)}
+              >
+                {exportTargets.map((target) => (
+                  <option key={target} value={target}>
+                    {targetLabel(target)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              信任等级
+              <select value={trustLevel} onChange={(event) => setTrustLevel(event.target.value as ProjectTrustLevel)}>
+                {projectTrustLevels.map((level) => (
+                  <option key={level} value={level}>
+                    {trustLevelLabel(level)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="muted">{trustLevelDescription(trustLevel)}</p>
+            <button className="primary-button" onClick={() => state.createProject(name, mode, compatibilityTarget, trustLevel)}>
               <Plus size={17} /> 新建
             </button>
           </div>
@@ -154,9 +182,23 @@ export function ProjectsPage() {
             <div className="list-item" key={example.id}>
               <strong>{example.name}</strong>
               <span className="muted">{example.description}</span>
-              <button className="secondary-button" onClick={() => state.importProject(example.create())}>
-                从示例创建
-              </button>
+              <details className="example-guide">
+                <summary>
+                  <BookOpen size={15} /> 查看说明
+                </summary>
+                <pre>{example.guideMarkdown}</pre>
+              </details>
+              <div className="toolbar">
+                <button className="secondary-button" onClick={() => state.importProject(example.create())}>
+                  从示例创建
+                </button>
+                <button
+                  className="ghost-button"
+                  onClick={() => downloadTextFile(`${safeFileName(example.name)}.md`, example.guideMarkdown, "text/markdown")}
+                >
+                  下载说明
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -175,6 +217,8 @@ export function ProjectsPage() {
               <span className="muted">
                 {project.characters.length} 角色 / {project.worldBooks.length} 世界书 / {project.assets.length} 资源
               </span>
+              <span className="muted">兼容目标：{targetLabel(project.compatibilityTarget)}</span>
+              <span className="muted">信任等级：{trustLevelLabel(project.trustLevel)}</span>
               <div className="toolbar">
                 <button className="secondary-button" onClick={() => state.openProject(project.id)}>
                   打开

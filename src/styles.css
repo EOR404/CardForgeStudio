@@ -409,6 +409,31 @@ pre {
   font-weight: 800;
 }
 
+.example-guide {
+  margin-top: 4px;
+}
+
+.example-guide summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--teal-dark);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.example-guide pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 12px;
+}
+
 .muted {
   color: var(--muted);
   font-size: 13px;

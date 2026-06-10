@@ -9,28 +9,26 @@ import {
   toWorldBookJson
 } from "../core/exporter/character";
 import { getV2PngBatchImageWarnings } from "../core/exporter/batch";
-import { buildExportPreflightReport, formatExportReportMarkdown, targetLabel, type ExportTarget } from "../core/exporter/report";
+import { buildExportPreflightReport, exportTargets, formatExportReportMarkdown, targetLabel } from "../core/exporter/report";
 import { embedV2MetadataInPngDataUrl, extractCharacterFromPngDataUrl } from "../core/exporter/pngMetadata";
 import { importCharacterJson, type ImportCharacterResult } from "../core/importer/character";
-import type { Asset, CompatibilityReport, InternalCharacter, VersionSnapshot } from "../core/schema/types";
+import type { Asset, CompatibilityReport, CompatibilityTarget, InternalCharacter, VersionSnapshot } from "../core/schema/types";
 import { getCurrentProject, useAppStore } from "../stores/useAppStore";
 import { downloadDataUrl, downloadTextFile, readFileAsDataUrl, readFileAsText, safeFileName } from "../utils/file";
 
-type Format = "v1_json" | "v2_json" | "v3_json" | "v2_png" | "worldbook_json";
-
-const exportTargets: ExportTarget[] = ["sillytavern_v2", "sillytavern_regex", "sillytavern_mvu", "chub", "cardforge_native", "local_test"];
+type Format = "v1_json" | "v2_json" | "v3_json" | "v2_png" | "avatar_png" | "worldbook_json";
 
 export function ExportPage() {
   const state = useAppStore();
   const project = getCurrentProject(state);
   const [format, setFormat] = useState<Format>("v2_json");
-  const [target, setTarget] = useState<ExportTarget>("sillytavern_v2");
   const [selectedVersionId, setSelectedVersionId] = useState("current");
   const [selectedBatchImageIds, setSelectedBatchImageIds] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [pendingImport, setPendingImport] = useState<ImportCharacterResult | undefined>();
   if (!project) return null;
   const activeProject = project;
+  const target = activeProject.compatibilityTarget;
   const character = activeProject.characters.find((item) => item.id === state.selectedCharacterId) ?? activeProject.characters[0];
   const characterSnapshots = character
     ? activeProject.versions
@@ -156,6 +154,22 @@ export function ExportPage() {
             })
           );
         }
+      }
+      if (format === "avatar_png" && exportCharacter) {
+        if (!imageAsset?.dataUrl) throw new Error("请选择可导出的 PNG 图片资源。");
+        const fileName = `${safeFileName(exportCharacter.name)}.avatar.png`;
+        downloadDataUrl(fileName, imageAsset.dataUrl);
+        state.addExportRecord(
+          createExportRecord({
+            characterId: exportCharacter.id,
+            characterVersionId: selectedSnapshot?.snapshot.id,
+            worldBookIds: worldBook ? [worldBook.id] : [],
+            assetIds: [imageAsset.id],
+            format,
+            outputPath: fileName,
+            warnings
+          })
+        );
       }
       downloadExportReport(false);
       setMessage(format === "v2_png" && batchImageAssets.length > 1 ? `已触发 ${batchImageAssets.length} 张 V2 PNG 下载。` : "导出已触发浏览器下载。");
@@ -352,12 +366,16 @@ export function ExportPage() {
                 <option value="v3_json">Character Card V3 JSON（实验）</option>
                 <option value="v1_json">Character Card V1 JSON</option>
                 <option value="v2_png">Character Card V2 PNG</option>
+                <option value="avatar_png">角色头像 PNG</option>
                 <option value="worldbook_json">世界书 JSON</option>
               </select>
             </label>
             <label>
               6. 目标平台
-              <select value={target} onChange={(event) => setTarget(event.target.value as ExportTarget)}>
+              <select
+                value={target}
+                onChange={(event) => state.updateProject({ compatibilityTarget: event.target.value as CompatibilityTarget })}
+              >
                 {exportTargets.map((item) => (
                   <option key={item} value={item}>
                     {targetLabel(item)}

@@ -1,18 +1,22 @@
 import { pluginSafetyIssues } from "../plugin-runtime/manifest";
 import { checkCharacterQuality, checkRegexRules, checkWorldBookQuality } from "../quality/checks";
 import { scriptSafetyIssues } from "../script-runtime/safety";
-import type { Asset, CardProject, InternalCharacter, InternalWorldBook, QualityIssue } from "../schema/types";
+import { canEnableFrontendScripts, trustLevelLabel } from "../security/trust";
+import type { Asset, CardProject, CompatibilityTarget, InternalCharacter, InternalWorldBook, QualityIssue } from "../schema/types";
 import { getV1LossWarnings } from "./character";
 
-export type ExportFormat = "v1_json" | "v2_json" | "v3_json" | "v2_png" | "worldbook_json";
+export type ExportFormat = "v1_json" | "v2_json" | "v3_json" | "v2_png" | "avatar_png" | "worldbook_json";
 
-export type ExportTarget =
-  | "sillytavern_v2"
-  | "sillytavern_regex"
-  | "sillytavern_mvu"
-  | "chub"
-  | "cardforge_native"
-  | "local_test";
+export type ExportTarget = CompatibilityTarget;
+
+export const exportTargets: ExportTarget[] = [
+  "sillytavern_v2",
+  "sillytavern_regex",
+  "sillytavern_mvu",
+  "chub",
+  "cardforge_native",
+  "local_test"
+];
 
 export type ExportCheckLevel = "pass" | "warning" | "blocker" | "info";
 
@@ -81,19 +85,19 @@ export function buildExportPreflightReport(input: {
     checks.push(check("missing-worldbook", "blocker", "worldbook", "请选择世界书后再导出。"));
   }
 
-  if (format === "v2_png" && !imageAsset) {
-    checks.push(check("missing-png-image", "blocker", "asset", "V2 PNG 需要选择 PNG 图片资源。", "可先在资源页导入图片，或在导出页临时导入。"));
+  if ((format === "v2_png" || format === "avatar_png") && !imageAsset) {
+    checks.push(check("missing-png-image", "blocker", "asset", `${format === "avatar_png" ? "头像 PNG" : "V2 PNG"} 需要选择 PNG 图片资源。`, "可先在资源页导入图片，或在导出页临时导入。"));
   }
-  if (format === "v2_png" && imageAsset && !imageAsset.dataUrl) {
-    checks.push(check("image-no-data", "blocker", "asset", "所选图片缺少 dataUrl，无法写入 PNG metadata。"));
+  if ((format === "v2_png" || format === "avatar_png") && imageAsset && !imageAsset.dataUrl) {
+    checks.push(check("image-no-data", "blocker", "asset", format === "avatar_png" ? "所选图片缺少 dataUrl，无法导出头像 PNG。" : "所选图片缺少 dataUrl，无法写入 PNG metadata。"));
   }
-  if (format === "v2_png" && imageAsset && imageAsset.dataUrl && !isPngAsset(imageAsset)) {
+  if ((format === "v2_png" || format === "avatar_png") && imageAsset && imageAsset.dataUrl && !isPngAsset(imageAsset)) {
     checks.push(
       check(
         "image-not-png",
         "blocker",
         "asset",
-        "V2 PNG metadata 只能写入 PNG 图片，请换用 PNG 资源。",
+        format === "avatar_png" ? "头像 PNG 导出需要 PNG 图片，请换用 PNG 资源。" : "V2 PNG metadata 只能写入 PNG 图片，请换用 PNG 资源。",
         imageAsset.mimeType || imageAsset.dataUrl.slice(0, 32)
       )
     );
@@ -194,7 +198,7 @@ function addCharacterDependencies(
     dependencies.push({
       type: "asset",
       label: imageAsset.name,
-      status: format === "v2_png" || format === "v3_json" ? "included" : "referenced",
+      status: format === "v2_png" || format === "avatar_png" || format === "v3_json" ? "included" : "referenced",
       evidence: imageAsset.purpose ? `用途：${imageAsset.purpose}` : "导出图片"
     });
   }
@@ -271,12 +275,24 @@ function advancedSafetyChecks(project: CardProject): ExportCheck[] {
   const checks: ExportCheck[] = [];
   checks.push(...checkRegexRules(project.advanced.regexRules).map((issue) => qualityIssueToCheck(issue, "advanced")));
   for (const script of project.advanced.scripts) {
-    for (const issue of scriptSafetyIssues(script)) {
+    for (const issue of scriptSafetyIssues(script, project.trustLevel)) {
       checks.push(check(`script-${script.id}-${issue.id}`, issue.level === "error" ? "blocker" : "warning", "security", `${script.name}: ${issue.message}`));
     }
   }
+  for (const frontend of project.advanced.frontendPackages) {
+    if (frontend.allowScripts && !canEnableFrontendScripts(project.trustLevel)) {
+      checks.push(
+        check(
+          `frontend-${frontend.id}-trust`,
+          "warning",
+          "security",
+          `${frontend.name}: ${trustLevelLabel(project.trustLevel)}项目不会运行前端卡 JS 预览。`
+        )
+      );
+    }
+  }
   for (const plugin of project.advanced.plugins) {
-    for (const issue of pluginSafetyIssues(plugin)) {
+    for (const issue of pluginSafetyIssues(plugin, project.trustLevel)) {
       checks.push(check(`plugin-${plugin.id}-${issue.id}`, issue.level === "error" ? "blocker" : "warning", "security", `${plugin.name}: ${issue.message}`));
     }
   }
