@@ -1,5 +1,6 @@
 import { uid } from "../schema/defaults";
-import type { PluginManifest, QualityIssue } from "../schema/types";
+import type { PluginManifest, ProjectTrustLevel, QualityIssue } from "../schema/types";
+import { canEnableManagedRuntime, trustLevelLabel } from "../security/trust";
 
 const BLOCKED_PERMISSIONS = new Set(["apiKey.read", "fs.fullAccess", "shell.execute", "network.fullAccess"]);
 
@@ -19,8 +20,11 @@ export function normalizePluginManifest(input: unknown): PluginManifest {
   };
 }
 
-export function pluginSafetyIssues(plugin: PluginManifest): QualityIssue[] {
+export function pluginSafetyIssues(plugin: PluginManifest, trustLevel: ProjectTrustLevel = "trusted"): QualityIssue[] {
   const issues: QualityIssue[] = [];
+  if (plugin.enabled && !canEnableManagedRuntime(trustLevel)) {
+    issues.push(issue("warning", "plugin.trustLevel", `${trustLevelLabel(trustLevel)}项目不能启用插件。`));
+  }
   for (const permission of plugin.permissions) {
     if (BLOCKED_PERMISSIONS.has(permission)) {
       issues.push(issue("error", "plugin.permission", `高风险权限被禁止：${permission}`));

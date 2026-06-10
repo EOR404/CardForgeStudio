@@ -1,3 +1,5 @@
+import { targetLabel } from "../exporter/report";
+import { trustLevelLabel } from "../security/trust";
 import type { AppPage, CardProject, CompatibilityReport, SearchTarget } from "../schema/types";
 
 export type ProjectSearchResult = {
@@ -76,7 +78,9 @@ function buildSearchDocuments(project: CardProject): SearchDocument[] {
     fields: [
       field("项目名", project.name, 8),
       field("描述", project.description, 6),
-      field("模式", project.mode, 3)
+      field("模式", project.mode, 3),
+      field("信任等级", [project.trustLevel, trustLevelLabel(project.trustLevel)], 5),
+      field("兼容目标", [project.compatibilityTarget, targetLabel(project.compatibilityTarget)], 5)
     ],
     target: pageTarget("dashboard"),
     updatedAt: project.updatedAt
