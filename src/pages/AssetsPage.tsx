@@ -1,4 +1,4 @@
-import { Image, Link2, Plus, Sparkles, Trash2 } from "lucide-react";
+import { Copy, Image, Link2, Plus, Sparkles, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { maybeAIInvocationLog } from "../core/ai/logging";
 import { analyzeImageWithAI, generateImagePromptWithAI, generateImagesWithAI, type ImageUnderstandingDraft } from "../core/ai/operations";
@@ -48,11 +48,14 @@ export function AssetsPage() {
   const [imageAnalysis, setImageAnalysis] = useState<ImageUnderstandingDraft | undefined>();
   const [imageAnalysisRaw, setImageAnalysisRaw] = useState("");
   const [imageAnalysisAssetId, setImageAnalysisAssetId] = useState("");
+  const [targetProjectId, setTargetProjectId] = useState("");
   if (!project) return null;
   const activeProject = project;
   const selectedAsset = activeProject.assets.find((asset) => asset.id === state.selectedAssetId) ?? activeProject.assets[0];
   const selectedCharacter = activeProject.characters.find((character) => character.id === state.selectedCharacterId) ?? activeProject.characters[0];
   const selectedWorldBook = activeProject.worldBooks.find((book) => book.id === state.selectedWorldBookId) ?? activeProject.worldBooks[0];
+  const otherProjects = state.projects.filter((item) => item.id !== activeProject.id);
+  const selectedTargetProjectId = otherProjects.some((item) => item.id === targetProjectId) ? targetProjectId : otherProjects[0]?.id ?? "";
   const assets = activeProject.assets.filter((asset) => {
     const q = search.toLowerCase();
     const characterNames = asset.linkedCharacterIds.map((id) => activeProject.characters.find((character) => character.id === id)?.name ?? id);
@@ -67,6 +70,22 @@ export function AssetsPage() {
       asset.notes,
       characterNames.join(","),
       worldBookNames.join(",")
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return (!purposeFilter || asset.purpose === purposeFilter) && (!q || haystack.includes(q));
+  });
+  const globalAssets = state.globalAssets.filter((asset) => {
+    const q = search.toLowerCase();
+    const haystack = [
+      asset.name,
+      asset.type,
+      asset.purpose,
+      asset.source,
+      asset.mimeType,
+      asset.tags.join(","),
+      asset.notes
     ]
       .filter(Boolean)
       .join(" ")
@@ -252,6 +271,24 @@ export function AssetsPage() {
     state.updateAsset(selectedAsset.id, patch);
   }
 
+  function copySelectedToGlobalLibrary() {
+    if (!selectedAsset) return;
+    state.copyAssetToGlobalLibrary(selectedAsset.id);
+    setImageStatus(`已复制到全局资源库：${selectedAsset.name}`);
+  }
+
+  function copyGlobalAssetToProject(asset: Asset) {
+    state.copyGlobalAssetToProject(asset.id);
+    setImageStatus(`已从全局资源库复制到项目库：${asset.name}`);
+  }
+
+  function copySelectedToOtherProject() {
+    if (!selectedAsset || !selectedTargetProjectId) return;
+    const targetProject = otherProjects.find((item) => item.id === selectedTargetProjectId);
+    state.copyAssetToProject(selectedAsset.id, selectedTargetProjectId);
+    setImageStatus(`已复制到其他项目：${targetProject?.name ?? selectedTargetProjectId} / ${selectedAsset.name}`);
+  }
+
   function linkCharacter() {
     if (!selectedAsset || !selectedCharacter) return;
     state.updateAsset(selectedAsset.id, {
@@ -333,7 +370,7 @@ export function AssetsPage() {
             </label>
           </div>
           <div className="callout" style={{ marginTop: 12 }}>
-            可直接拖拽图片、JSON、Markdown、脚本或前端文件到资源库。图片可标记为头像、导出封面、背景、表情差分等用途。
+            可直接拖拽图片、JSON、Markdown、脚本或前端文件到项目资源库。常用素材可复制到全局资源库，再复用到其他项目。
           </div>
           <div className="panel-title" style={{ marginTop: 16 }}>
             <Sparkles size={18} />
@@ -445,6 +482,37 @@ export function AssetsPage() {
             ))}
             {!assets.length && <p className="muted">拖入资源或使用添加按钮导入。</p>}
           </div>
+          <div className="panel-title" style={{ marginTop: 18 }}>
+            <Copy size={18} />
+            <span>全局资源库</span>
+          </div>
+          <div className="callout" style={{ marginBottom: 12 }}>
+            全局资源库保存在本机浏览器存储中，不会进入单个项目 JSON；复制到项目库后才会随项目导出。
+          </div>
+          <div className="asset-grid">
+            {globalAssets.map((asset) => (
+              <div className="asset-tile" key={asset.id}>
+                {asset.type === "image" && asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt={asset.name} /> : <div className="muted">非图片资源</div>}
+                <div>
+                  <strong>{asset.name}</strong>
+                  <span className="muted">{purposeLabel(asset.purpose)} / {asset.type}</span>
+                  <span className="muted">{asset.tags.join(", ") || "无标签"}</span>
+                  <div className="toolbar">
+                    <button className="secondary-button" onClick={() => copyGlobalAssetToProject(asset)}>
+                      复制到项目库
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => window.confirm(`从全局资源库删除「${asset.name}」？项目内已复制的资源不受影响。`) && state.deleteGlobalAsset(asset.id)}
+                    >
+                      删除
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {!globalAssets.length && <p className="muted">暂无匹配的全局资源。可在右侧资源详情中把项目资源复制到全局库。</p>}
+          </div>
         </main>
 
         <aside className="panel">
@@ -507,7 +575,30 @@ export function AssetsPage() {
                 >
                   <Sparkles size={17} /> AI 分析图片
                 </button>
+                <button className="secondary-button" onClick={copySelectedToGlobalLibrary}>
+                  <Copy size={17} /> 复制到全局库
+                </button>
               </div>
+              {otherProjects.length > 0 && (
+                <div className="form-row">
+                  <label>
+                    目标项目
+                    <select value={selectedTargetProjectId} onChange={(event) => setTargetProjectId(event.target.value)}>
+                      {otherProjects.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div>
+                    <span className="muted">跨项目资源</span>
+                    <button className="secondary-button" type="button" onClick={copySelectedToOtherProject} disabled={!selectedTargetProjectId}>
+                      <Copy size={17} /> 复制到其他项目
+                    </button>
+                  </div>
+                </div>
+              )}
               {imageAnalysis && imageAnalysisAssetId === selectedAsset.id && (
                 <section className="callout">
                   <strong>图片理解结果</strong>

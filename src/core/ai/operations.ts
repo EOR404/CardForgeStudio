@@ -30,6 +30,13 @@ export type ImageUnderstandingDraft = {
   notes?: string;
 };
 
+export type JsonRepairInput = {
+  rawText: string;
+  error?: string;
+  targetFormat?: string;
+  notes?: string;
+};
+
 export async function generateCharacterDraftWithAI(
   provider: AIProviderConfig,
   idea: string,
@@ -127,6 +134,46 @@ export async function extractWorldBookEntriesWithAI(
         { role: "user", content: `从以下长设定文本抽取适合进入世界书的条目，并自动生成关键词和分类：\n${sourceText}` }
       ];
   const { content: raw, log } = await runLoggedCompletion(provider, messages, "worldBookSuggest", preset?.paramsOverride ?? { maxTokens: 1800 });
+  return { ...parseAiJson(raw), log };
+}
+
+export async function repairJsonWithAI(
+  provider: AIProviderConfig,
+  input: JsonRepairInput,
+  preset?: AIPreset
+): Promise<AIActionResult> {
+  const variables = {
+    rawText: input.rawText,
+    raw: input.rawText,
+    error: input.error ?? "",
+    targetFormat: input.targetFormat ?? "valid JSON",
+    notes: input.notes ?? ""
+  };
+  const messages: ChatMessage[] = preset
+    ? buildPresetMessages(preset, variables)
+    : [
+        {
+          role: "system",
+          content:
+            "你是 CardForge Studio 的 JSON 修复助手。只输出可被 JSON.parse 解析的 JSON，不输出 Markdown、解释或代码围栏。尽量保留原始字段和值，不要编造缺失正文。"
+        },
+        {
+          role: "user",
+          content: [
+            `目标格式：${variables.targetFormat}`,
+            variables.error ? `解析错误：${variables.error}` : "",
+            variables.notes ? `补充说明：${variables.notes}` : "",
+            "请修复以下内容为合法 JSON：",
+            variables.rawText
+          ].filter(Boolean).join("\n")
+        }
+      ];
+  const { content: raw, log } = await runLoggedCompletion(
+    provider,
+    messages,
+    "jsonRepair",
+    { ...(preset?.paramsOverride ?? { temperature: 0.1, maxTokens: 2400 }), stream: false }
+  );
   return { ...parseAiJson(raw), log };
 }
 

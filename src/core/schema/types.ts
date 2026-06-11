@@ -377,6 +377,8 @@ export type VersionSnapshot = {
   createdAt: number;
 };
 
+export type AdvancedSnapshotTarget = "all" | "regex" | "variables" | "scripts" | "frontend" | "plugins";
+
 export type FieldDiff = {
   field: string;
   before: string;

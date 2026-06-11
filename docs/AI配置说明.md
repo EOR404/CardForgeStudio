@@ -40,6 +40,10 @@ CardForge Studio 不内置 API Key，也不绑定单一模型平台。所有 AI 
 - `imageUnderstanding`
 - `variableUpdate`
 
+`jsonRepair` 用于角色页 JSON 导入失败后的修复导入。内置预设变量包括 `rawText`、`error`、`targetFormat` 和 `notes`，要求模型只返回可被 `JSON.parse` 解析的 JSON。
+
+导出页的基础格式转换默认使用本地确定性转换器，不消耗 AI；`formatConversion` 任务类型保留给后续或自定义预设中的 AI 辅助转换、社区格式解释与修复。
+
 图片生成建议：
 
 - `imagePrompt` 使用文本模型，负责把角色卡转换成 positive / negative prompt。

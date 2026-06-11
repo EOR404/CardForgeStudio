@@ -20,6 +20,8 @@ import { importCharacterJson, importWorldBookJson } from "../src/core/importer/c
 import { getV2PngBatchImageWarnings } from "../src/core/exporter/batch";
 import { createExportRecord, getV1LossWarnings, toV1Character, toV2Character, toV3Character, toWorldBookJson } from "../src/core/exporter/character";
 import { exportCharacterCharx, importCharacterCharx } from "../src/core/exporter/charx";
+import { convertJsonFormat } from "../src/core/exporter/formatConversion";
+import { getRecentExportImageAssets } from "../src/core/exporter/recentImages";
 import { buildExportPreflightReport, exportTargets, formatExportReportMarkdown, targetLabel } from "../src/core/exporter/report";
 import { embedV2MetadataInPngDataUrl, extractCharacterFromPngDataUrl } from "../src/core/exporter/pngMetadata";
 import { analyzeWorldBookTrigger, triggerWorldBookEntries } from "../src/core/worldbook/trigger";
@@ -34,7 +36,7 @@ import { summarizeAILogs } from "../src/core/ai/cost";
 import { parseOpenAIStreamText } from "../src/core/ai/client";
 import { callImageGeneration, parseImageGenerationResponse } from "../src/core/ai/image";
 import { createAIInvocationLog } from "../src/core/ai/logging";
-import { analyzeImageWithAI } from "../src/core/ai/operations";
+import { analyzeImageWithAI, repairJsonWithAI } from "../src/core/ai/operations";
 import { buildFrontendSandboxPreview } from "../src/core/frontend/sandbox";
 import { buildTestPrompt } from "../src/core/prompt-builder/buildPrompt";
 import { diffCharacters, diffWorldBookSnapshotAgainstCurrent, diffWorldBooks, summarizeDiff } from "../src/core/version/diff";
@@ -112,8 +114,29 @@ Object.defineProperty(globalThis, "localStorage", {
 });
 BrowserStorage.save([defaultProject], defaultProject.id);
 assert.equal(BrowserStorage.load().currentProjectId, defaultProject.id);
-BrowserStorage.save([], undefined);
-assert.equal(BrowserStorage.load().currentProjectId, undefined);
+const globalLibraryAsset: Asset = {
+  id: "asset_global_self_check",
+  name: "共享头像.png",
+  type: "image",
+  purpose: "avatar",
+  source: "reference",
+  mimeType: "image/png",
+  dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+  thumbnailUrl: "data:image/png;base64,iVBORw0KGgo=",
+  tags: ["全局库", "头像"],
+  linkedCharacterIds: [],
+  linkedWorldBookIds: [],
+  notes: "全局资源库自检。",
+  createdAt: Date.now(),
+  updatedAt: Date.now()
+};
+BrowserStorage.save([defaultProject], defaultProject.id, [globalLibraryAsset]);
+const loadedGlobalAssetSnapshot = BrowserStorage.load();
+assert.equal(loadedGlobalAssetSnapshot.globalAssets?.[0]?.name, "共享头像.png");
+BrowserStorage.save([], undefined, []);
+const emptyStorageSnapshot = BrowserStorage.load();
+assert.equal(emptyStorageSnapshot.currentProjectId, undefined);
+assert.equal(emptyStorageSnapshot.globalAssets?.length, 0);
 const storageRecoveryProject = createProjectDraft("浏览器存储恢复自检", "light");
 storageRecoveryProject.aiProviders[0].apiKey = "sk-local-storage-keep";
 BrowserStorage.save([storageRecoveryProject], storageRecoveryProject.id);
@@ -126,6 +149,7 @@ assert.equal(recoveredStorage.currentProjectId, storageRecoveryProject.id);
 BrowserStorage.clear();
 useAppStore.setState({
   projects: [],
+  globalAssets: [],
   currentProjectId: undefined,
   activePage: "projects",
   undoStack: [],
@@ -143,6 +167,76 @@ assert.equal(useAppStore.getState().redoStack.length, 1);
 useAppStore.getState().redoLastChange();
 assert.equal(getCurrentProject(useAppStore.getState())!.characters[0].name, "撤销重做后的角色名");
 assert.equal(BrowserStorage.load().projects[0].characters[0].name, "撤销重做后的角色名");
+useAppStore.getState().addAsset({
+  name: "项目头像.png",
+  type: "image",
+  purpose: "avatar",
+  source: "upload",
+  mimeType: "image/png",
+  dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+  thumbnailUrl: "data:image/png;base64,iVBORw0KGgo=",
+  tags: ["头像"],
+  linkedCharacterIds: [undoCharacterId],
+  linkedWorldBookIds: []
+});
+const projectAsset = getCurrentProject(useAppStore.getState())!.assets.at(-1)!;
+useAppStore.getState().copyAssetToGlobalLibrary(projectAsset.id);
+assert.equal(useAppStore.getState().globalAssets.length, 1);
+assert.equal(useAppStore.getState().globalAssets[0].linkedCharacterIds.length, 0);
+assert.ok(BrowserStorage.load().globalAssets?.some((asset) => asset.name === "项目头像.png"));
+useAppStore.setState({ activePage: "export" });
+const copiedGlobalAssetId = useAppStore.getState().copyGlobalAssetToProject(useAppStore.getState().globalAssets[0].id, { stayOnPage: true });
+assert.ok(copiedGlobalAssetId);
+assert.equal(getCurrentProject(useAppStore.getState())!.assets.length, 2);
+assert.equal(useAppStore.getState().activePage, "export");
+assert.equal(useAppStore.getState().selectedAssetId, copiedGlobalAssetId);
+assert.ok(getCurrentProject(useAppStore.getState())!.assets.some((asset) => asset.tags.includes("全局导入")));
+useAppStore.getState().deleteGlobalAsset(useAppStore.getState().globalAssets[0].id);
+assert.equal(useAppStore.getState().globalAssets.length, 0);
+const sourceProjectIdForAssetCopy = useAppStore.getState().currentProjectId!;
+useAppStore.getState().createProject("资源目标项目", "light");
+const targetProjectIdForAssetCopy = useAppStore.getState().currentProjectId!;
+useAppStore.getState().openProject(sourceProjectIdForAssetCopy);
+useAppStore.getState().copyAssetToProject(projectAsset.id, targetProjectIdForAssetCopy);
+const targetProjectForAssetCopy = useAppStore.getState().projects.find((project) => project.id === targetProjectIdForAssetCopy)!;
+assert.ok(targetProjectForAssetCopy.assets.some((asset) => asset.name === "项目头像.png" && asset.tags.includes("跨项目复制")));
+assert.equal(targetProjectForAssetCopy.assets.find((asset) => asset.name === "项目头像.png")?.linkedCharacterIds.length, 0);
+useAppStore.getState().openProject(sourceProjectIdForAssetCopy);
+useAppStore.getState().addRegexRule();
+const advancedSnapshotProject = getCurrentProject(useAppStore.getState())!;
+const advancedRegexRule = advancedSnapshotProject.advanced.regexRules.at(-1)!;
+useAppStore.getState().createAdvancedSnapshot("regex", "Regex 基线快照");
+const regexAdvancedSnapshot = getCurrentProject(useAppStore.getState())!.versions.find(
+  (snapshot) => snapshot.targetType === "advanced" && snapshot.targetId === "regex"
+)!;
+useAppStore.getState().updateRegexRule(advancedRegexRule.id, { name: "已修改的正则规则" });
+assert.equal(
+  getCurrentProject(useAppStore.getState())!.advanced.regexRules.find((rule) => rule.id === advancedRegexRule.id)?.name,
+  "已修改的正则规则"
+);
+useAppStore.getState().restoreAdvancedSnapshot(regexAdvancedSnapshot.id);
+assert.equal(
+  getCurrentProject(useAppStore.getState())!.advanced.regexRules.find((rule) => rule.id === advancedRegexRule.id)?.name,
+  advancedRegexRule.name
+);
+const baselineVariableState = structuredClone(getCurrentProject(useAppStore.getState())!.advanced.variableSystem.state);
+useAppStore.getState().createAdvancedSnapshot("variables", "变量基线快照");
+const variableAdvancedSnapshot = getCurrentProject(useAppStore.getState())!.versions.find(
+  (snapshot) => snapshot.targetType === "advanced" && snapshot.targetId === "variables"
+)!;
+const projectBeforeVariableMutation = getCurrentProject(useAppStore.getState())!;
+useAppStore.getState().updateProject({
+  advanced: {
+    ...projectBeforeVariableMutation.advanced,
+    variableSystem: {
+      ...projectBeforeVariableMutation.advanced.variableSystem,
+      state: { changed: true },
+      updatedAt: Date.now()
+    }
+  }
+});
+useAppStore.getState().restoreAdvancedSnapshot(variableAdvancedSnapshot.id);
+assert.deepEqual(getCurrentProject(useAppStore.getState())!.advanced.variableSystem.state, baselineVariableState);
 
 const v1 = toV1Character(character);
 assert.equal(v1.name, "莉娅");
@@ -190,6 +284,15 @@ const importedV2 = importCharacterJson(v2);
 assert.equal(importedV2.character.name, "莉娅");
 assert.equal(importedV2.embeddedWorldBook?.entries.length, 2);
 assert.equal(importedV2.report.importedAsReadonly, false);
+const convertedV1 = convertJsonFormat(v2, "v1_json", "lia.v2.json");
+assert.equal(JSON.parse(convertedV1.outputText).name, "莉娅");
+assert.equal(convertedV1.kind, "character");
+assert.ok(convertedV1.warnings.some((warning) => warning.includes("system_prompt")));
+const convertedV3 = convertJsonFormat(v2, "v3_json", "lia.v2.json");
+assert.equal(JSON.parse(convertedV3.outputText).spec, "chara_card_v3");
+const convertedEmbeddedWorldBook = convertJsonFormat(v2, "worldbook_json", "lia.v2.json");
+assert.equal(JSON.parse(convertedEmbeddedWorldBook.outputText).entries.length, 2);
+assert.equal(convertedEmbeddedWorldBook.kind, "worldbook");
 const onePixelPng =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 const pngWithMetadata = await embedV2MetadataInPngDataUrl(onePixelPng, character, worldBook);
@@ -373,6 +476,65 @@ const charxExportRecord = createExportRecord({
   warnings: []
 });
 assert.equal(charxExportRecord.format, "charx");
+const recentProject = createProjectDraft("最近导出图片自检", "light");
+const recentCoverAsset: Asset = {
+  id: "asset_recent_cover",
+  name: "recent-cover.png",
+  type: "image",
+  purpose: "cover",
+  source: "upload",
+  mimeType: "image/png",
+  dataUrl: onePixelPng,
+  thumbnailUrl: onePixelPng,
+  tags: ["cover"],
+  linkedCharacterIds: [],
+  linkedWorldBookIds: [],
+  createdAt: Date.now(),
+  updatedAt: Date.now()
+};
+const recentAvatarAsset: Asset = {
+  ...recentCoverAsset,
+  id: "asset_recent_avatar",
+  name: "recent-avatar.png",
+  purpose: "avatar"
+};
+const recentTextAsset: Asset = {
+  ...recentCoverAsset,
+  id: "asset_recent_text",
+  name: "recent.txt",
+  type: "text",
+  purpose: "other",
+  mimeType: "text/plain",
+  dataUrl: "data:text/plain;base64,cmVjZW50"
+};
+recentProject.assets = [recentCoverAsset, recentAvatarAsset, recentTextAsset];
+recentProject.exports = [
+  {
+    ...createExportRecord({
+      characterId: character.id,
+      worldBookIds: [],
+      assetIds: [recentCoverAsset.id],
+      format: "avatar_png",
+      outputPath: "old-avatar.png",
+      warnings: []
+    }),
+    createdAt: Date.now() - 1000
+  },
+  {
+    ...createExportRecord({
+      characterId: character.id,
+      worldBookIds: [],
+      assetIds: [recentAvatarAsset.id, recentTextAsset.id, recentCoverAsset.id],
+      format: "v2_png",
+      outputPath: "new-card.png",
+      warnings: []
+    }),
+    createdAt: Date.now()
+  }
+];
+const recentImages = getRecentExportImageAssets(recentProject);
+assert.deepEqual(recentImages.map((asset) => asset.id), [recentAvatarAsset.id, recentCoverAsset.id]);
+assert.deepEqual(getRecentExportImageAssets(recentProject, 1).map((asset) => asset.id), [recentAvatarAsset.id]);
 
 const exportedWorldBook = toWorldBookJson(worldBook);
 const exportedWorldBookEntries = (exportedWorldBook as { entries: Array<{ extensions?: { cardforge?: { category?: string } } }> }).entries;
@@ -774,6 +936,46 @@ assert.ok(imageUnderstanding.parsed?.tags.includes("雪国"));
 assert.equal(imageUnderstanding.log?.taskType, "imageUnderstanding");
 assert.ok(Array.isArray(visionRequestBody.messages?.[1]?.content));
 assert.ok((visionRequestBody.messages?.[1]?.content as Array<{ type?: string }>).some((part) => part.type === "image_url"));
+let jsonRepairRequestBody: { messages?: Array<{ content?: string }> } = {};
+globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+  jsonRepairRequestBody = init?.body ? JSON.parse(String(init.body)) as { messages?: Array<{ content?: string }> } : {};
+  return new Response(
+    JSON.stringify({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              spec: "chara_card_v2",
+              spec_version: "2.0",
+              data: {
+                name: "莉娅",
+                description: "雪国边境药师。",
+                first_mes: "门铃轻响。",
+                alternate_greetings: [],
+                tags: ["修复"]
+              }
+            })
+          }
+        }
+      ],
+      usage: { prompt_tokens: 80, completion_tokens: 42, total_tokens: 122 }
+    }),
+    {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    }
+  );
+}) as typeof fetch;
+const repairedJson = await repairJsonWithAI(visionProvider, {
+  rawText: '{"spec":"chara_card_v2","data":{"name":"莉娅",',
+  error: "Unexpected end of JSON input",
+  targetFormat: "Character Card V2 JSON"
+});
+globalThis.fetch = originalFetch;
+assert.equal((repairedJson.parsed as { spec?: string })?.spec, "chara_card_v2");
+assert.equal(repairedJson.log?.taskType, "jsonRepair");
+assert.ok(jsonRepairRequestBody.messages?.some((message) => message.content?.includes("Unexpected end")));
+assert.ok(jsonRepairRequestBody.messages?.some((message) => message.content?.includes("chara_card_v2")));
 let comfyRequest: { endpoint?: string; body?: Record<string, unknown>; headers?: Record<string, string> } = {};
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   comfyRequest = {
@@ -1377,12 +1579,14 @@ const validatePreset = findTaskPreset(exampleProjects[0].create().aiPresets, "va
 const worldBookPreset = findTaskPreset(exampleProjects[0].create().aiPresets, "worldBookSuggest");
 const testChatPreset = findTaskPreset(exampleProjects[0].create().aiPresets, "testChat");
 const diagnosePreset = findTaskPreset(exampleProjects[0].create().aiPresets, "diagnoseTest");
+const jsonRepairPreset = findTaskPreset(exampleProjects[0].create().aiPresets, "jsonRepair");
 const imagePromptPreset = findTaskPreset(exampleProjects[0].create().aiPresets, "imagePrompt");
 assert.ok(generatePreset);
 assert.ok(validatePreset);
 assert.ok(worldBookPreset);
 assert.ok(testChatPreset);
 assert.ok(diagnosePreset);
+assert.ok(jsonRepairPreset);
 assert.ok(imagePromptPreset);
 const routedPreset = createPresetDraft({ paramsOverride: { temperature: 0.3, topP: 0.9, maxTokens: 500 } });
 assert.equal(routedPreset.paramsOverride?.topP, 0.9);
@@ -1390,8 +1594,10 @@ assert.equal(renderPromptTemplate("角色：{{ idea }}", { idea: "月下药师" 
 assert.equal(buildPresetMessages(generatePreset!, { idea: "月下药师" }).length, 2);
 assert.ok(buildPresetMessages(validatePreset!, { character }).some((message) => message.content.includes("莉娅")));
 assert.ok(buildPresetMessages(worldBookPreset!, { source: "雾城与钟塔" }).some((message) => message.content.includes("雾城")));
+assert.ok(buildPresetMessages(jsonRepairPreset!, { rawText: "{bad", error: "Expected property", targetFormat: "Character Card V2 JSON" }).some((message) => message.content.includes("{bad")));
 assert.deepEqual(missingPresetVariables(generatePreset!, { idea: "" }), ["idea"]);
 assert.deepEqual(missingPresetVariables(worldBookPreset!, { source: "" }), ["source"]);
+assert.deepEqual(missingPresetVariables(jsonRepairPreset!, { rawText: "" }), ["rawText"]);
 const routeProviderA = { ...createProviderDraft(), id: "provider_route_a", name: "Route A", defaultTaskTypes: [] };
 const routeProviderB = {
   ...createProviderDraft(),

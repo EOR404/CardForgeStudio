@@ -261,7 +261,7 @@ function normalizeWorldBookEntry(value: UnknownRecord, index: number): WorldBook
   };
 }
 
-function normalizeAsset(value: UnknownRecord): Asset {
+export function normalizeAsset(value: UnknownRecord): Asset {
   return {
     ...value,
     id: asString(value.id, uid("asset")),

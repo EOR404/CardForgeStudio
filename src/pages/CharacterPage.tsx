@@ -1,7 +1,7 @@
 import { Bot, Copy, FileJson, Plus, Save, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { maybeAIInvocationLog } from "../core/ai/logging";
-import { checkCharacterWithAI, generateCharacterDraftWithAI, rewriteCharacterFieldWithAI, suggestWorldBookWithAI } from "../core/ai/operations";
+import { checkCharacterWithAI, generateCharacterDraftWithAI, repairJsonWithAI, rewriteCharacterFieldWithAI, suggestWorldBookWithAI } from "../core/ai/operations";
 import { resolveAIForTask } from "../core/ai/presets";
 import { prettyJson, toV2Character } from "../core/exporter/character";
 import { importCharacterCharx } from "../core/exporter/charx";
@@ -25,6 +25,13 @@ type TextFieldKey =
   | "creatorNotes";
 
 type FieldOperation = "generate" | "polish" | "shorten" | "expand" | "natural" | "concise" | "immersive";
+
+type FailedJsonImportDraft = {
+  fileName: string;
+  rawText: string;
+  errorMessage: string;
+  targetFormat: string;
+};
 
 const textFields: Array<{ key: TextFieldKey; label: string }> = [
   { key: "description", label: "description" },
@@ -61,6 +68,7 @@ export function CharacterPage() {
   const [aiQualityRaw, setAiQualityRaw] = useState("");
   const [importStatus, setImportStatus] = useState("");
   const [pendingImport, setPendingImport] = useState<ImportCharacterResult | undefined>();
+  const [failedJsonImport, setFailedJsonImport] = useState<FailedJsonImportDraft | undefined>();
   if (!project) return null;
   const activeProject = project;
   const selected = activeProject.characters.find((character) => character.id === state.selectedCharacterId) ?? activeProject.characters[0];
@@ -87,14 +95,33 @@ export function CharacterPage() {
       const result = await parseCharacterImportFile(file);
       if (result.report.importedAsReadonly) {
         setPendingImport(result);
+        setFailedJsonImport(undefined);
         setImportStatus(`只读扫描完成：${file.name}。请确认后再转换导入。`);
         return;
       }
       state.importCharacterResult(result);
       setPendingImport(undefined);
+      setFailedJsonImport(undefined);
       setImportStatus(`已导入角色：${file.name}`);
     } catch (error) {
-      setImportStatus(`角色导入失败：${error instanceof Error ? error.message : String(error)}。现有角色未被修改。`);
+      const message = error instanceof Error ? error.message : String(error);
+      setPendingImport(undefined);
+      setImportStatus(`角色导入失败：${message}。现有角色未被修改。`);
+      if (isJsonLikeFile(file)) {
+        const rawText = await readFileAsText(file).catch(() => "");
+        setFailedJsonImport(
+          rawText.trim()
+            ? {
+                fileName: file.name,
+                rawText,
+                errorMessage: message,
+                targetFormat: "Character Card V2 JSON"
+              }
+            : undefined
+        );
+      } else {
+        setFailedJsonImport(undefined);
+      }
     }
   }
 
@@ -110,11 +137,51 @@ export function CharacterPage() {
     return importCharacterJson(JSON.parse(text), file.name);
   }
 
+  async function repairFailedJsonImport() {
+    if (!failedJsonImport) return;
+    const { provider, preset } = resolveTaskAI("jsonRepair");
+    if (!provider) return alert("请先在 AI 设置页添加 Provider。");
+    setBusy("jsonRepair");
+    try {
+      const result = await repairJsonWithAI(
+        provider,
+        {
+          rawText: failedJsonImport.rawText,
+          error: failedJsonImport.errorMessage,
+          targetFormat: failedJsonImport.targetFormat,
+          notes: "修复为角色卡 JSON；如果原文是 Character Card V1/V2/V3，请保留可识别字段。"
+        },
+        preset
+      );
+      if (result.log) state.addAIInvocationLog(result.log);
+      if (!result.parsed) {
+        setImportStatus(`AI 修复完成，但输出仍不是有效 JSON：${result.error ?? "未知解析错误"}。现有角色未被修改。`);
+        return;
+      }
+      const repaired = importCharacterJson(result.parsed, `${failedJsonImport.fileName}（AI修复）`);
+      if (repaired.report.importedAsReadonly) {
+        setPendingImport(repaired);
+        setImportStatus(`AI 修复完成：${failedJsonImport.fileName}。检测到复杂卡，请确认后再转换导入。`);
+      } else {
+        state.importCharacterResult(repaired);
+        setPendingImport(undefined);
+        setImportStatus(`AI 已修复并导入角色：${repaired.character.name}`);
+      }
+      setFailedJsonImport(undefined);
+    } catch (error) {
+      recordAIError(error);
+      setImportStatus(`AI 修复失败：${error instanceof Error ? error.message : String(error)}。现有角色未被修改。`);
+    } finally {
+      setBusy("");
+    }
+  }
+
   function confirmPendingImport() {
     if (!pendingImport) return;
     state.importCharacterResult(pendingImport);
     setImportStatus(`已确认并转换导入：${pendingImport.character.name}`);
     setPendingImport(undefined);
+    setFailedJsonImport(undefined);
   }
 
   async function generateDraft() {
@@ -274,6 +341,32 @@ export function CharacterPage() {
         </div>
       </div>
       {importStatus && <div className="callout" style={{ marginBottom: 14 }}><pre>{importStatus}</pre></div>}
+      {failedJsonImport && (
+        <section className="panel import-preview">
+          <div className="panel-title">
+            <FileJson size={18} />
+            <span>导入 JSON 待修复</span>
+          </div>
+          <div className="form-grid">
+            <div className="issue warning">
+              <b>{failedJsonImport.fileName}</b>
+              <span>{failedJsonImport.errorMessage}</span>
+            </div>
+            <pre>{failedJsonImport.rawText.slice(0, 1600)}{failedJsonImport.rawText.length > 1600 ? "\n..." : ""}</pre>
+            <div className="toolbar">
+              <button className="primary-button" onClick={repairFailedJsonImport} disabled={busy === "jsonRepair"}>
+                <Sparkles size={17} /> {busy === "jsonRepair" ? "修复中..." : "AI 修复并导入 JSON"}
+              </button>
+              <button className="secondary-button" onClick={() => {
+                setFailedJsonImport(undefined);
+                setImportStatus("已放弃 JSON 修复，现有角色未被修改。");
+              }}>
+                放弃修复
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
       {pendingImport && (
         <section className="panel import-preview">
           <div className="panel-title">
@@ -879,4 +972,10 @@ function isPngFile(file: File): boolean {
 
 function isCharxFile(file: File): boolean {
   return file.name.toLowerCase().endsWith(".charx");
+}
+
+function isJsonLikeFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  if (isPngFile(file) || isCharxFile(file) || name.endsWith(".zip") || file.type === "application/zip") return false;
+  return file.type.includes("json") || file.type.startsWith("text/") || name.endsWith(".json") || !file.type;
 }

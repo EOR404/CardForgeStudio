@@ -192,6 +192,23 @@ export function createBuiltInPresets(): AIPreset[] {
       paramsOverride: { temperature: 0.2, maxTokens: 1200 }
     },
     {
+      id: "preset_json_repair",
+      name: "导入 JSON 修复",
+      taskType: "jsonRepair",
+      systemPrompt:
+        "你是 CardForge Studio 的 JSON 修复助手。只输出可被 JSON.parse 解析的 JSON，不输出 Markdown、解释或代码围栏。尽量保留原始字段和值，不要编造缺失正文。",
+      userPromptTemplate:
+        "目标格式：{{targetFormat}}\n解析错误：{{error}}\n补充说明：{{notes}}\n请修复以下内容为合法 JSON：\n{{rawText}}",
+      outputMode: "json",
+      variables: [
+        { key: "rawText", label: "原始文本", required: true },
+        { key: "error", label: "解析错误" },
+        { key: "targetFormat", label: "目标格式", defaultValue: "Character Card V2 JSON" },
+        { key: "notes", label: "补充说明" }
+      ],
+      paramsOverride: { temperature: 0.1, maxTokens: 2400 }
+    },
+    {
       id: "preset_image_prompt",
       name: "图片提示词生成",
       taskType: "imagePrompt",

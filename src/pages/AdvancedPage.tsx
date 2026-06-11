@@ -1,4 +1,19 @@
-import { Braces, ClipboardCheck, Code2, FileJson, FlaskConical, Package, Plus, Puzzle, ScrollText, ShieldAlert, Trash2 } from "lucide-react";
+import {
+  Braces,
+  ClipboardCheck,
+  Code2,
+  FileJson,
+  FlaskConical,
+  History,
+  Package,
+  Plus,
+  Puzzle,
+  RotateCcw,
+  Save,
+  ScrollText,
+  ShieldAlert,
+  Trash2
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { buildFrontendSandboxPreview, type FrontendSandboxEvent } from "../core/frontend/sandbox";
 import { importFrontendPackageFromFiles, importRegexRulesFromConfig, importScriptFile } from "../core/importer/advanced";
@@ -6,7 +21,17 @@ import { normalizePluginManifest, pluginSafetyIssues, isPluginRunnableInCurrentV
 import { runRegexPipeline } from "../core/regex/regex";
 import { createFrontendPackageDraft, createPluginDraft, createRegexRuleDraft, createScriptDraft, uid } from "../core/schema/defaults";
 import { applyVariableDiffs, diffVariables, parseVariableUpdateCommands, previewVariableDiffs } from "../core/variable-system/mvu";
-import type { Asset, CardScript, CompatibilityReport, FrontendCardPackage, InternalWorldBook, PluginManifest, RegexRule, VariableSystem } from "../core/schema/types";
+import type {
+  AdvancedSnapshotTarget,
+  Asset,
+  CardScript,
+  CompatibilityReport,
+  FrontendCardPackage,
+  InternalWorldBook,
+  PluginManifest,
+  RegexRule,
+  VariableSystem
+} from "../core/schema/types";
 import { scriptSafetyIssues } from "../core/script-runtime/safety";
 import { canEnableFrontendScripts, canEnableManagedRuntime, trustLevelDescription, trustLevelLabel } from "../core/security/trust";
 import { getCurrentProject, useAppStore } from "../stores/useAppStore";
@@ -37,6 +62,8 @@ export function AdvancedPage() {
         <Tab id="plugins" tab={tab} setTab={setTab} icon={<Puzzle size={16} />} label="Plugin Manager" />
       </div>
 
+      <AdvancedSnapshotPanel target={advancedSnapshotTargetForTab(tab)} />
+
       {tab === "reports" && <ImportReports />}
       {tab === "regex" && <RegexLab />}
       {tab === "variables" && <VariableLab />}
@@ -45,6 +72,92 @@ export function AdvancedPage() {
       {tab === "plugins" && <PluginManager />}
     </section>
   );
+}
+
+function AdvancedSnapshotPanel({ target }: { target: AdvancedSnapshotTarget }) {
+  const state = useAppStore();
+  const project = getCurrentProject(state)!;
+  const [notes, setNotes] = useState("");
+  const snapshots = project.versions.filter((snapshot) => snapshot.targetType === "advanced" && snapshot.targetId === target);
+
+  return (
+    <section className="panel compact" style={{ marginBottom: 14 }}>
+      <div className="panel-title">
+        <History size={17} />
+        <span>高级模块快照</span>
+        <span className="muted">{advancedSnapshotTargetLabel(target)}</span>
+      </div>
+      <div className="form-row">
+        <label>
+          快照备注
+          <input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="例如：导入脚本前" />
+        </label>
+        <div>
+          <span className="muted">保存当前高级模块状态，可单独恢复。</span>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => {
+              state.createAdvancedSnapshot(target, notes || "手动高级快照");
+              setNotes("");
+            }}
+          >
+            <Save size={16} /> 创建快照
+          </button>
+        </div>
+      </div>
+      <div className="list" style={{ marginTop: 12 }}>
+        {snapshots.slice(0, 3).map((snapshot) => (
+          <div className="list-item" key={snapshot.id}>
+            <strong>{snapshot.label}</strong>
+            <span className="muted">{snapshot.notes || "无备注"}</span>
+            {snapshot.diffSummary?.length ? (
+              <span className="muted">
+                差异：{snapshot.diffSummary.slice(0, 3).map((diff) => `${diff.field} ${diff.before} -> ${diff.after}`).join("；")}
+              </span>
+            ) : (
+              <span className="muted">首次快照或无差异摘要。</span>
+            )}
+            <button
+              className="danger-button"
+              type="button"
+              onClick={() =>
+                window.confirm(`恢复高级模块快照「${snapshot.label}」？当前 ${advancedSnapshotTargetLabel(target)} 内容会被替换。`) &&
+                state.restoreAdvancedSnapshot(snapshot.id)
+              }
+            >
+              <RotateCcw size={16} /> 恢复
+            </button>
+          </div>
+        ))}
+        {!snapshots.length && <p className="muted">还没有当前高级模块快照。</p>}
+      </div>
+    </section>
+  );
+}
+
+function advancedSnapshotTargetForTab(tab: AdvancedTab): AdvancedSnapshotTarget {
+  const targets: Record<AdvancedTab, AdvancedSnapshotTarget> = {
+    reports: "all",
+    regex: "regex",
+    variables: "variables",
+    scripts: "scripts",
+    frontend: "frontend",
+    plugins: "plugins"
+  };
+  return targets[tab];
+}
+
+function advancedSnapshotTargetLabel(target: AdvancedSnapshotTarget): string {
+  const labels: Record<AdvancedSnapshotTarget, string> = {
+    all: "高级工程全部",
+    regex: "Regex Lab",
+    variables: "Variable Lab",
+    scripts: "Script Manager",
+    frontend: "Frontend Sandbox",
+    plugins: "Plugin Manager"
+  };
+  return labels[target];
 }
 
 function ImportReports() {

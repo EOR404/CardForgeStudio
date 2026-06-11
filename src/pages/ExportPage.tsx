@@ -9,6 +9,8 @@ import {
   toWorldBookJson
 } from "../core/exporter/character";
 import { exportCharacterCharx, importCharacterCharx } from "../core/exporter/charx";
+import { convertJsonFormat, type FormatConversionResult, type FormatConversionTarget } from "../core/exporter/formatConversion";
+import { getRecentExportImageAssets } from "../core/exporter/recentImages";
 import { buildExportPreflightReport, exportTargets, formatExportReportMarkdown, targetLabel } from "../core/exporter/report";
 import { embedV2MetadataInPngDataUrl, extractCharacterFromPngDataUrl } from "../core/exporter/pngMetadata";
 import { importCharacterJson, type ImportCharacterResult } from "../core/importer/character";
@@ -26,6 +28,12 @@ export function ExportPage() {
   const [selectedBatchImageIds, setSelectedBatchImageIds] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [pendingImport, setPendingImport] = useState<ImportCharacterResult | undefined>();
+  const [conversionTarget, setConversionTarget] = useState<FormatConversionTarget>("v2_json");
+  const [conversionInput, setConversionInput] = useState("");
+  const [conversionResult, setConversionResult] = useState<FormatConversionResult | undefined>();
+  const [conversionStatus, setConversionStatus] = useState("");
+  const [selectedGlobalImageId, setSelectedGlobalImageId] = useState("");
+  const [selectedRecentImageId, setSelectedRecentImageId] = useState("");
   if (!project) return null;
   const activeProject = project;
   const target = activeProject.compatibilityTarget;
@@ -49,6 +57,14 @@ export function ExportPage() {
     .filter((item) => item.type === "image")
     .sort((a, b) => rankExportImage(b, exportCharacter) - rankExportImage(a, exportCharacter) || a.name.localeCompare(b.name));
   const imageAsset = imageAssets.find((item) => item.id === state.selectedAssetId) ?? imageAssets[0];
+  const globalImageAssets = state.globalAssets
+    .filter((item) => item.type === "image")
+    .sort((a, b) => rankExportImage(b, exportCharacter) - rankExportImage(a, exportCharacter) || a.name.localeCompare(b.name));
+  const selectedGlobalImage =
+    globalImageAssets.find((item) => item.id === selectedGlobalImageId) ?? globalImageAssets[0];
+  const recentImageAssets = getRecentExportImageAssets(activeProject);
+  const selectedRecentImage =
+    recentImageAssets.find((item) => item.id === selectedRecentImageId) ?? recentImageAssets[0];
   const batchImageAssets =
     format === "v2_png" && selectedBatchImageIds.length
       ? imageAssets.filter((asset) => selectedBatchImageIds.includes(asset.id))
@@ -259,6 +275,53 @@ export function ExportPage() {
     }
   }
 
+  async function importConversionSource(file: File) {
+    try {
+      const text = await readFileAsText(file);
+      setConversionInput(text);
+      setConversionResult(undefined);
+      setConversionStatus(`已载入转换源：${file.name}`);
+    } catch (error) {
+      setConversionStatus(`读取转换源失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  function loadCurrentForConversion() {
+    const source =
+      conversionTarget === "worldbook_json" && worldBook
+        ? toWorldBookJson(worldBook)
+        : exportCharacter
+          ? toV2Character(exportCharacter, worldBook)
+          : worldBook
+            ? toWorldBookJson(worldBook)
+            : undefined;
+    if (!source) {
+      setConversionStatus("当前没有可载入的角色或世界书。");
+      return;
+    }
+    setConversionInput(prettyJson(source));
+    setConversionResult(undefined);
+    setConversionStatus(conversionTarget === "worldbook_json" && worldBook ? "已载入当前世界书。" : "已载入当前角色 V2 JSON。");
+  }
+
+  function runFormatConversion() {
+    try {
+      const parsed = JSON.parse(conversionInput);
+      const result = convertJsonFormat(parsed, conversionTarget, "格式转换输入");
+      setConversionResult(result);
+      setConversionStatus(`已转换为 ${conversionTargetLabel(conversionTarget)}：${result.title}`);
+    } catch (error) {
+      setConversionResult(undefined);
+      setConversionStatus(`格式转换失败：${error instanceof Error ? error.message : String(error)}。源数据未被修改。`);
+    }
+  }
+
+  function downloadConversionResult() {
+    if (!conversionResult) return;
+    downloadTextFile(conversionResult.fileName, conversionResult.outputText);
+    setConversionStatus(`已触发转换结果下载：${conversionResult.fileName}`);
+  }
+
   function handleCharacterImportResult(result: ImportCharacterResult, fileName: string) {
     if (result.report.importedAsReadonly) {
       setPendingImport(result);
@@ -293,6 +356,31 @@ export function ExportPage() {
     });
     state.setActivePage("export");
     setMessage(`已加入导出图片：${file.name}`);
+  }
+
+  function copyGlobalImageForExport() {
+    if (!selectedGlobalImage) {
+      setMessage("全局图片库暂无可用图片。");
+      return;
+    }
+    const copiedAssetId = state.copyGlobalAssetToProject(selectedGlobalImage.id, { stayOnPage: true });
+    if (!copiedAssetId) {
+      setMessage("从全局图片库复制失败，源图片可能已被删除。");
+      return;
+    }
+    useAppStore.setState({ selectedAssetId: copiedAssetId, activePage: "export" });
+    setSelectedBatchImageIds([]);
+    setMessage(`已从全局图片库复制并选中：${selectedGlobalImage.name}`);
+  }
+
+  function selectRecentImageForExport() {
+    if (!selectedRecentImage) {
+      setMessage("暂无最近使用图片。");
+      return;
+    }
+    useAppStore.setState({ selectedAssetId: selectedRecentImage.id, activePage: "export" });
+    setSelectedBatchImageIds([]);
+    setMessage(`已选中最近使用图片：${selectedRecentImage.name}`);
   }
 
   return (
@@ -355,6 +443,60 @@ export function ExportPage() {
                 ))}
               </select>
             </label>
+            {globalImageAssets.length > 0 && (
+              <section className="panel compact">
+                <div className="panel-title">从全局图片库选择</div>
+                <div className="form-row">
+                  <label>
+                    全局图片
+                    <select value={selectedGlobalImage?.id ?? ""} onChange={(event) => setSelectedGlobalImageId(event.target.value)}>
+                      {globalImageAssets.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name} / {purposeLabel(item.purpose)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div>
+                    <span className="muted">复制到当前项目</span>
+                    <button className="secondary-button" type="button" onClick={copyGlobalImageForExport}>
+                      复制并选中
+                    </button>
+                  </div>
+                </div>
+                <p className="muted">全局图片会先复制为当前项目资源，再用于 PNG/头像导出和导出历史。</p>
+              </section>
+            )}
+            {recentImageAssets.length > 0 && (
+              <section className="panel compact">
+                <div className="panel-title">从最近使用选择</div>
+                <div className="form-row">
+                  <label>
+                    最近图片
+                    <select value={selectedRecentImage?.id ?? ""} onChange={(event) => setSelectedRecentImageId(event.target.value)}>
+                      {recentImageAssets.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name} / {purposeLabel(item.purpose)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div>
+                    <span className="muted">导出历史</span>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      title="选中最近使用图片"
+                      aria-label="选中最近使用图片"
+                      onClick={selectRecentImageForExport}
+                    >
+                      选中
+                    </button>
+                  </div>
+                </div>
+                <p className="muted">最近使用来自当前项目导出历史，适合复用刚导出过的头像或封面。</p>
+              </section>
+            )}
             {format === "v2_png" && imageAssets.length > 0 && (
               <section className="panel compact">
                 <div className="panel-title">批量 V2 PNG 图片</div>
@@ -476,6 +618,74 @@ export function ExportPage() {
 
         <aside className="panel">
           <div className="panel-title">
+            <FileJson size={18} />
+            <span>格式转换</span>
+          </div>
+          <div className="form-grid">
+            <label>
+              目标格式
+              <select value={conversionTarget} onChange={(event) => setConversionTarget(event.target.value as FormatConversionTarget)}>
+                <option value="v2_json">Character Card V2 JSON</option>
+                <option value="v3_json">Character Card V3 JSON</option>
+                <option value="v1_json">Character Card V1 JSON</option>
+                <option value="worldbook_json">世界书 JSON</option>
+              </select>
+            </label>
+            <div className="toolbar">
+              <button className="secondary-button" onClick={loadCurrentForConversion}>
+                从当前选择载入
+              </button>
+              <label className="secondary-button">
+                <FileJson size={17} /> 导入源 JSON
+                <input hidden type="file" accept="application/json,.json" onChange={(event) => event.target.files?.[0] && importConversionSource(event.target.files[0])} />
+              </label>
+            </div>
+            <label>
+              源 JSON
+              <textarea
+                value={conversionInput}
+                onChange={(event) => {
+                  setConversionInput(event.target.value);
+                  setConversionResult(undefined);
+                }}
+                placeholder="粘贴 V1/V2/V3 角色卡 JSON 或世界书 JSON"
+                spellCheck={false}
+                style={{ minHeight: 150, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" }}
+              />
+            </label>
+            <div className="toolbar">
+              <button className="primary-button" onClick={runFormatConversion} disabled={!conversionInput.trim()}>
+                转换格式
+              </button>
+              <button className="secondary-button" onClick={downloadConversionResult} disabled={!conversionResult}>
+                下载结果
+              </button>
+            </div>
+            {conversionStatus && <div className="callout"><pre>{conversionStatus}</pre></div>}
+            {conversionResult && (
+              <section className="callout">
+                <strong>{conversionResult.title} / {conversionTargetLabel(conversionResult.target)}</strong>
+                {conversionResult.report && (
+                  <p className="muted">
+                    {conversionResult.report.source} / {compatibilityCardKindLabel(conversionResult.report.cardKind)}
+                  </p>
+                )}
+                {conversionResult.warnings.length > 0 && (
+                  <ul className="issue-list">
+                    {conversionResult.warnings.slice(0, 6).map((warning) => (
+                      <li className="issue warning" key={warning}>
+                        <b>提示</b>
+                        <span>{warning}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <pre className="json-preview">{conversionResult.outputText.slice(0, 1600)}{conversionResult.outputText.length > 1600 ? "\n..." : ""}</pre>
+              </section>
+            )}
+          </div>
+
+          <div className="panel-title" style={{ marginTop: 16 }}>
             <Import size={18} />
             <span>导入</span>
           </div>
@@ -616,6 +826,16 @@ function compatibilityFeatureLabels(report: CompatibilityReport): string[] {
   if (report.detected.frontend) labels.push("前端 UI");
   if (report.detected.extensions) labels.push("扩展字段");
   return labels.length ? labels : ["未检测到重型依赖"];
+}
+
+function conversionTargetLabel(target: FormatConversionTarget): string {
+  const labels: Record<FormatConversionTarget, string> = {
+    v1_json: "Character Card V1 JSON",
+    v2_json: "Character Card V2 JSON",
+    v3_json: "Character Card V3 JSON",
+    worldbook_json: "世界书 JSON"
+  };
+  return labels[target];
 }
 
 function isCharxFile(file: File): boolean {

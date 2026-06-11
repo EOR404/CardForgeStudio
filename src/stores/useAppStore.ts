@@ -12,20 +12,27 @@ import {
   uid
 } from "../core/schema/defaults";
 import type {
+  AdvancedProjectData,
+  AdvancedSnapshotTarget,
   AppPage,
   Asset,
   AIInvocationLog,
   AIProviderConfig,
   AIPreset,
   CardProject,
+  CardScript,
   CompatibilityTarget,
   CustomTestCase,
   ExportRecord,
+  FieldDiff,
+  FrontendCardPackage,
   InternalCharacter,
   InternalWorldBook,
+  PluginManifest,
   ProjectTrustLevel,
   RegexRule,
   TestSession,
+  VariableSystem,
   VersionSnapshot,
   WorldBookEntry
 } from "../core/schema/types";
@@ -47,6 +54,7 @@ type PendingAIResult = {
 
 type HistorySnapshot = {
   projects: CardProject[];
+  globalAssets: Asset[];
   currentProjectId?: string;
   activePage: AppPage;
   selectedCharacterId?: string;
@@ -57,6 +65,7 @@ type HistorySnapshot = {
 
 type AppState = {
   projects: CardProject[];
+  globalAssets: Asset[];
   currentProjectId?: string;
   activePage: AppPage;
   selectedCharacterId?: string;
@@ -91,6 +100,10 @@ type AppState = {
   addAsset: (asset: Omit<Asset, "id" | "createdAt" | "updatedAt">) => void;
   updateAsset: (id: string, patch: Partial<Asset>) => void;
   deleteAsset: (id: string) => void;
+  copyAssetToGlobalLibrary: (assetId: string) => void;
+  copyGlobalAssetToProject: (assetId: string, options?: { stayOnPage?: boolean }) => string | undefined;
+  copyAssetToProject: (assetId: string, targetProjectId: string) => void;
+  deleteGlobalAsset: (assetId: string) => void;
   setCharacterAvatar: (characterId: string, assetId: string) => void;
   upsertProvider: (providerId: string | undefined, patch: Record<string, unknown>) => void;
   removeProvider: (providerId: string) => void;
@@ -109,6 +122,8 @@ type AppState = {
   restoreWorldBookSnapshot: (snapshotId: string) => void;
   createProjectSnapshot: (notes?: string) => void;
   restoreProjectSnapshot: (snapshotId: string) => void;
+  createAdvancedSnapshot: (target: AdvancedSnapshotTarget, notes?: string) => void;
+  restoreAdvancedSnapshot: (snapshotId: string) => void;
   addExportRecord: (record: ExportRecord) => void;
   addRegexRule: () => void;
   updateRegexRule: (ruleId: string, patch: Partial<RegexRule>) => void;
@@ -117,6 +132,7 @@ type AppState = {
 
 export const useAppStore = create<AppState>((set, get) => ({
   projects: initial.projects.length ? initial.projects : [],
+  globalAssets: initial.globalAssets ?? [],
   currentProjectId: initial.currentProjectId,
   activePage: initial.currentProjectId ? "dashboard" : "projects",
   selectedCharacterId: initial.projects.find((project) => project.id === initial.currentProjectId)?.characters[0]?.id,
@@ -324,6 +340,44 @@ export const useAppStore = create<AppState>((set, get) => ({
         character.avatarAssetId === id ? { ...character, avatarAssetId: undefined } : character
       )
     }));
+  },
+  copyAssetToGlobalLibrary(assetId) {
+    const project = getCurrentProject(get());
+    const asset = project?.assets.find((item) => item.id === assetId);
+    if (!project || !asset) return;
+    const globalAsset = cloneAssetForLibrary(asset, "global", project.name);
+    const globalAssets = [globalAsset, ...get().globalAssets];
+    set({ globalAssets });
+    BrowserStorage.save(get().projects, get().currentProjectId, globalAssets);
+  },
+  copyGlobalAssetToProject(assetId, options) {
+    const asset = get().globalAssets.find((item) => item.id === assetId);
+    if (!asset) return undefined;
+    const nextAsset = cloneAssetForLibrary(asset, "project");
+    updateCurrentProject(set, get, (project) => ({ ...project, assets: [...project.assets, nextAsset] }));
+    set({ selectedAssetId: nextAsset.id, activePage: options?.stayOnPage ? get().activePage : "assets" });
+    return nextAsset.id;
+  },
+  copyAssetToProject(assetId, targetProjectId) {
+    const sourceProject = getCurrentProject(get());
+    const asset = sourceProject?.assets.find((item) => item.id === assetId);
+    if (!sourceProject || !asset || sourceProject.id === targetProjectId) return;
+    const nextAsset = cloneAssetForLibrary(asset, "other-project", sourceProject.name);
+    const projects = get().projects.map((project) =>
+      project.id === targetProjectId
+        ? {
+            ...project,
+            assets: [...project.assets, nextAsset],
+            updatedAt: now()
+          }
+        : project
+    );
+    commit(set, get, { projects });
+  },
+  deleteGlobalAsset(assetId) {
+    const globalAssets = get().globalAssets.filter((asset) => asset.id !== assetId);
+    set({ globalAssets });
+    BrowserStorage.save(get().projects, get().currentProjectId, globalAssets);
   },
   setCharacterAvatar(characterId, assetId) {
     get().updateCharacter(characterId, { avatarAssetId: assetId });
@@ -537,6 +591,36 @@ export const useAppStore = create<AppState>((set, get) => ({
       activePage: "dashboard"
     });
   },
+  createAdvancedSnapshot(target, notes) {
+    const project = getCurrentProject(get());
+    if (!project) return;
+    const data = getAdvancedSnapshotData(project.advanced, target);
+    const previousSnapshot = project.versions.find(
+      (item) => item.targetType === "advanced" && item.targetId === target
+    );
+    const snapshot: VersionSnapshot = {
+      id: uid("version"),
+      label: `${advancedSnapshotTargetLabel(target)} ${new Date().toLocaleString()}`,
+      notes,
+      targetType: "advanced",
+      targetId: target,
+      data: structuredClone(data),
+      diffSummary: previousSnapshot ? diffAdvancedSnapshotData(previousSnapshot.data, data, target) : [],
+      createdAt: now()
+    };
+    updateCurrentProject(set, get, (current) => ({ ...current, versions: [snapshot, ...current.versions] }));
+  },
+  restoreAdvancedSnapshot(snapshotId) {
+    const project = getCurrentProject(get());
+    const snapshot = project?.versions.find((item) => item.id === snapshotId && item.targetType === "advanced");
+    if (!project || !snapshot) return;
+    const target = asAdvancedSnapshotTarget(snapshot.targetId);
+    updateCurrentProject(set, get, (current) => ({
+      ...current,
+      advanced: restoreAdvancedSnapshotData(current.advanced, target, snapshot.data)
+    }));
+    set({ activePage: "advanced" });
+  },
   addExportRecord(record) {
     updateCurrentProject(set, get, (project) => ({ ...project, exports: [record, ...project.exports] }));
   },
@@ -625,6 +709,152 @@ function createImportBackupSnapshot(project: CardProject, label: string, notes: 
   };
 }
 
+function getAdvancedSnapshotData(advanced: AdvancedProjectData, target: AdvancedSnapshotTarget): unknown {
+  switch (target) {
+    case "regex":
+      return advanced.regexRules;
+    case "variables":
+      return advanced.variableSystem;
+    case "scripts":
+      return advanced.scripts;
+    case "frontend":
+      return advanced.frontendPackages;
+    case "plugins":
+      return advanced.plugins;
+    case "all":
+      return advanced;
+  }
+}
+
+function restoreAdvancedSnapshotData(
+  advanced: AdvancedProjectData,
+  target: AdvancedSnapshotTarget,
+  data: unknown
+): AdvancedProjectData {
+  switch (target) {
+    case "regex":
+      return { ...advanced, regexRules: structuredClone(data as RegexRule[]) };
+    case "variables":
+      return { ...advanced, variableSystem: structuredClone(data as VariableSystem) };
+    case "scripts":
+      return { ...advanced, scripts: structuredClone(data as CardScript[]) };
+    case "frontend":
+      return { ...advanced, frontendPackages: structuredClone(data as FrontendCardPackage[]) };
+    case "plugins":
+      return { ...advanced, plugins: structuredClone(data as PluginManifest[]) };
+    case "all":
+      return structuredClone(data as AdvancedProjectData);
+  }
+}
+
+function asAdvancedSnapshotTarget(value: string): AdvancedSnapshotTarget {
+  return isAdvancedSnapshotTarget(value) ? value : "all";
+}
+
+function isAdvancedSnapshotTarget(value: string): value is AdvancedSnapshotTarget {
+  return ["all", "regex", "variables", "scripts", "frontend", "plugins"].includes(value);
+}
+
+function advancedSnapshotTargetLabel(target: AdvancedSnapshotTarget): string {
+  const labels: Record<AdvancedSnapshotTarget, string> = {
+    all: "高级工程",
+    regex: "Regex Lab",
+    variables: "Variable Lab",
+    scripts: "Script Manager",
+    frontend: "Frontend Sandbox",
+    plugins: "Plugin Manager"
+  };
+  return labels[target];
+}
+
+function diffAdvancedSnapshotData(previous: unknown, current: unknown, target: AdvancedSnapshotTarget): FieldDiff[] {
+  const beforeMetrics = advancedSnapshotMetrics(previous, target);
+  const afterMetrics = advancedSnapshotMetrics(current, target);
+  return Object.keys(afterMetrics)
+    .filter((key) => beforeMetrics[key] !== afterMetrics[key])
+    .map((key) => ({ field: key, before: beforeMetrics[key] ?? "0", after: afterMetrics[key] ?? "0" }));
+}
+
+function advancedSnapshotMetrics(data: unknown, target: AdvancedSnapshotTarget): Record<string, string> {
+  switch (target) {
+    case "regex": {
+      const rules = (Array.isArray(data) ? data : []) as RegexRule[];
+      return {
+        "Regex 规则数": String(rules.length),
+        "启用规则数": String(rules.filter((rule) => rule.enabled).length)
+      };
+    }
+    case "variables": {
+      const variables = data as Partial<VariableSystem> | undefined;
+      return {
+        "变量路径数": String(countLeafPaths(variables?.state ?? {})),
+        "变量历史数": String(Array.isArray(variables?.history) ? variables.history.length : 0)
+      };
+    }
+    case "scripts": {
+      const scripts = (Array.isArray(data) ? data : []) as CardScript[];
+      return {
+        "脚本数": String(scripts.length),
+        "启用脚本数": String(scripts.filter((script) => script.enabled).length)
+      };
+    }
+    case "frontend": {
+      const packages = (Array.isArray(data) ? data : []) as FrontendCardPackage[];
+      return {
+        "前端包数": String(packages.length),
+        "启用脚本预览数": String(packages.filter((item) => item.allowScripts).length)
+      };
+    }
+    case "plugins": {
+      const plugins = (Array.isArray(data) ? data : []) as PluginManifest[];
+      return {
+        "插件数": String(plugins.length),
+        "启用插件数": String(plugins.filter((plugin) => plugin.enabled).length)
+      };
+    }
+    case "all": {
+      const advanced = data as Partial<AdvancedProjectData> | undefined;
+      return {
+        "Regex 规则数": String(advanced?.regexRules?.length ?? 0),
+        "变量路径数": String(countLeafPaths(advanced?.variableSystem?.state ?? {})),
+        "脚本数": String(advanced?.scripts?.length ?? 0),
+        "前端包数": String(advanced?.frontendPackages?.length ?? 0),
+        "插件数": String(advanced?.plugins?.length ?? 0),
+        "兼容报告数": String(advanced?.compatibilityReports?.length ?? 0)
+      };
+    }
+  }
+}
+
+function countLeafPaths(value: unknown): number {
+  if (!value || typeof value !== "object") return 1;
+  if (Array.isArray(value)) return value.reduce<number>((total, item) => total + countLeafPaths(item), 0);
+  const entries = Object.values(value as Record<string, unknown>);
+  if (!entries.length) return 0;
+  return entries.reduce<number>((total, item) => total + countLeafPaths(item), 0);
+}
+
+function cloneAssetForLibrary(asset: Asset, target: "global" | "project" | "other-project", sourceProjectName?: string): Asset {
+  const copiedAt = now();
+  const notes = [
+    asset.notes,
+    target === "global" && sourceProjectName ? `全局库来源项目：${sourceProjectName}` : "",
+    target === "project" ? `从全局资源库复制：${asset.name}` : "",
+    target === "other-project" && sourceProjectName ? `从项目「${sourceProjectName}」复制：${asset.name}` : ""
+  ].filter(Boolean).join("\n\n");
+  return {
+    ...structuredClone(asset),
+    id: uid("asset"),
+    source: target === "global" ? "reference" : "imported",
+    linkedCharacterIds: [],
+    linkedWorldBookIds: [],
+    tags: [...new Set([...asset.tags, target === "global" ? "全局库" : target === "project" ? "全局导入" : "跨项目复制"])],
+    notes,
+    createdAt: copiedAt,
+    updatedAt: copiedAt
+  };
+}
+
 function commit(
   set: (partial: Partial<AppState>) => void,
   get: () => AppState,
@@ -641,7 +871,11 @@ function commit(
         }
       : {};
   set({ ...partial, ...historyPatch });
-  BrowserStorage.save(partial.projects ?? next.projects, partial.currentProjectId ?? next.currentProjectId);
+  BrowserStorage.save(
+    partial.projects ?? next.projects,
+    partial.currentProjectId ?? next.currentProjectId,
+    partial.globalAssets ?? next.globalAssets
+  );
 }
 
 function updateCurrentProject(
@@ -659,6 +893,7 @@ function updateCurrentProject(
 function createHistorySnapshot(state: AppState): HistorySnapshot {
   return {
     projects: structuredClone(state.projects),
+    globalAssets: structuredClone(state.globalAssets),
     currentProjectId: state.currentProjectId,
     activePage: state.activePage,
     selectedCharacterId: state.selectedCharacterId,
@@ -676,10 +911,11 @@ function restoreHistorySnapshot(
   set({
     ...snapshot,
     projects: structuredClone(snapshot.projects),
+    globalAssets: structuredClone(snapshot.globalAssets),
     pendingAIResult: undefined,
     ...stacks
   });
-  BrowserStorage.save(snapshot.projects, snapshot.currentProjectId);
+  BrowserStorage.save(snapshot.projects, snapshot.currentProjectId, snapshot.globalAssets);
 }
 
 function deepMergeRecords(base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {

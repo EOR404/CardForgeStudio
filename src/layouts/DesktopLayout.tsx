@@ -69,7 +69,7 @@ export function DesktopLayout({ children }: PropsWithChildren) {
 
   function saveToLocalStorage() {
     try {
-      BrowserStorage.save(state.projects, state.currentProjectId);
+      BrowserStorage.save(state.projects, state.currentProjectId, state.globalAssets);
       setSaveStatus(project ? `已保存：${project.name}` : "已保存本地数据");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
