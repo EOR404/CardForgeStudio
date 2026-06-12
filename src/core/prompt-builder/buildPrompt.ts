@@ -98,7 +98,7 @@ function buildPromptSections(
           content: `[${entry.entryName || entry.entryId}]\n${entry.content}`,
           enabled: true,
           position: `${entry.position} / order ${entry.insertionOrder}`,
-          target: { page: "worldbooks", selectedWorldBookId: worldBook?.id ?? entry.worldBookId }
+          target: { page: "worldbooks", selectedWorldBookId: worldBook?.id ?? entry.worldBookId, selectedWorldBookEntryId: entry.entryId }
         })
       );
     }

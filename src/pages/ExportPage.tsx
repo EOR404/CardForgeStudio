@@ -96,6 +96,8 @@ export function ExportPage() {
     const confirmation = buildExportConfirmation();
     if (confirmation && !window.confirm(confirmation)) return;
     try {
+      let v2PngSuccessCount = 0;
+      let v2PngFallbackCount = 0;
       if (format === "v1_json" && exportCharacter) {
         const fileName = `${safeFileName(exportCharacter.name)}${versionSuffix}.v1.json`;
         downloadTextFile(fileName, prettyJson(toV1Character(exportCharacter)));
@@ -177,24 +179,46 @@ export function ExportPage() {
       }
       if (format === "v2_png" && exportCharacter) {
         if (!batchImageAssets.length) throw new Error("请选择 PNG 图片资源。");
+        const backupJson = prettyJson(toV2Character(exportCharacter, worldBook));
         for (const [index, image] of batchImageAssets.entries()) {
-          if (!image.dataUrl) throw new Error(`图片「${image.name}」缺少 dataUrl。`);
-          const dataUrl = await embedV2MetadataInPngDataUrl(image.dataUrl, exportCharacter, worldBook);
           const imageSuffix = batchImageAssets.length > 1 ? `.${index + 1}-${safeFileName(image.name.replace(/\.[^.]+$/, ""))}` : "";
-          const fileName = `${safeFileName(exportCharacter.name)}${versionSuffix}${imageSuffix}.v2.png`;
-          downloadDataUrl(fileName, dataUrl);
-          downloadTextFile(`${safeFileName(exportCharacter.name)}${versionSuffix}${imageSuffix}.v2.backup.json`, prettyJson(toV2Character(exportCharacter, worldBook)));
-          state.addExportRecord(
-            createExportRecord({
-              characterId: exportCharacter.id,
-              characterVersionId: selectedSnapshot?.snapshot.id,
-              worldBookIds: worldBook ? [worldBook.id] : [],
-              assetIds: [image.id],
-              format,
-              outputPath: fileName,
-              warnings
-            })
-          );
+          const baseName = `${safeFileName(exportCharacter.name)}${versionSuffix}${imageSuffix}.v2`;
+          const fileName = `${baseName}.png`;
+          const backupFileName = `${baseName}.backup.json`;
+          try {
+            if (!image.dataUrl) throw new Error(`图片「${image.name}」缺少 dataUrl。`);
+            const dataUrl = await embedV2MetadataInPngDataUrl(image.dataUrl, exportCharacter, worldBook);
+            downloadDataUrl(fileName, dataUrl);
+            downloadTextFile(backupFileName, backupJson);
+            v2PngSuccessCount += 1;
+            state.addExportRecord(
+              createExportRecord({
+                characterId: exportCharacter.id,
+                characterVersionId: selectedSnapshot?.snapshot.id,
+                worldBookIds: worldBook ? [worldBook.id] : [],
+                assetIds: [image.id],
+                format,
+                outputPath: `${fileName} + ${backupFileName}`,
+                warnings
+              })
+            );
+          } catch (error) {
+            const errorMessage = (error instanceof Error ? error.message : String(error)).replace(/[。\s.]+$/u, "");
+            const fallbackWarning = `V2 PNG metadata 写入失败：${errorMessage}。已导出 V2 JSON 备份。`;
+            downloadTextFile(backupFileName, backupJson);
+            v2PngFallbackCount += 1;
+            state.addExportRecord(
+              createExportRecord({
+                characterId: exportCharacter.id,
+                characterVersionId: selectedSnapshot?.snapshot.id,
+                worldBookIds: worldBook ? [worldBook.id] : [],
+                assetIds: [image.id],
+                format: "v2_json",
+                outputPath: backupFileName,
+                warnings: [...warnings, fallbackWarning]
+              })
+            );
+          }
         }
       }
       if (format === "avatar_png" && exportCharacter) {
@@ -214,7 +238,17 @@ export function ExportPage() {
         );
       }
       downloadExportReport(false);
-      setMessage(format === "v2_png" && batchImageAssets.length > 1 ? `已触发 ${batchImageAssets.length} 张 V2 PNG 下载。` : "导出已触发浏览器下载。");
+      if (format === "v2_png") {
+        if (v2PngFallbackCount > 0 && v2PngSuccessCount > 0) {
+          setMessage(`已触发 ${v2PngSuccessCount} 张 V2 PNG 下载；${v2PngFallbackCount} 张 PNG 写入失败，已导出 V2 JSON 备份。`);
+        } else if (v2PngFallbackCount > 0) {
+          setMessage(`V2 PNG 写入失败，已导出 ${v2PngFallbackCount} 个 V2 JSON 备份。`);
+        } else {
+          setMessage(batchImageAssets.length > 1 ? `已触发 ${batchImageAssets.length} 张 V2 PNG 下载，并保留 JSON 备份。` : "导出已触发浏览器下载，并保留 JSON 备份。");
+        }
+      } else {
+        setMessage("导出已触发浏览器下载。");
+      }
     } catch (error) {
       setMessage(`导出失败：${error instanceof Error ? error.message : String(error)}。源数据未被修改。`);
     }
@@ -423,7 +457,13 @@ export function ExportPage() {
             {selectedSnapshot && <p className="muted">将从快照导出：{selectedSnapshot.snapshot.notes || selectedSnapshot.snapshot.label}</p>}
             <label>
               3. 选择世界书
-              <select value={worldBook?.id ?? ""} onChange={(event) => useAppStore.setState({ selectedWorldBookId: event.target.value })}>
+              <select
+                value={worldBook?.id ?? ""}
+                onChange={(event) => {
+                  const nextWorldBook = activeProject.worldBooks.find((item) => item.id === event.target.value);
+                  useAppStore.setState({ selectedWorldBookId: event.target.value, selectedWorldBookEntryId: nextWorldBook?.entries[0]?.id });
+                }}
+              >
                 <option value="">不嵌入世界书</option>
                 {activeProject.worldBooks.map((item) => (
                   <option key={item.id} value={item.id}>

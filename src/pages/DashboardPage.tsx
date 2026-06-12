@@ -33,6 +33,7 @@ export function DashboardPage() {
       activePage: result.target.page,
       ...(result.target.selectedCharacterId ? { selectedCharacterId: result.target.selectedCharacterId } : {}),
       ...(result.target.selectedWorldBookId ? { selectedWorldBookId: result.target.selectedWorldBookId } : {}),
+      ...(result.target.selectedWorldBookEntryId ? { selectedWorldBookEntryId: result.target.selectedWorldBookEntryId } : {}),
       ...(result.target.selectedAssetId ? { selectedAssetId: result.target.selectedAssetId } : {}),
       ...(result.target.selectedProviderId ? { selectedProviderId: result.target.selectedProviderId } : {})
     });

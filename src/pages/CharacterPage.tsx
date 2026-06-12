@@ -798,6 +798,9 @@ export function CharacterPage() {
                   >
                     从快照恢复
                   </button>
+                  <button className="secondary-button" onClick={() => state.copyCharacterSnapshotToNewCharacter(selectedSnapshot.id)}>
+                    <Copy size={16} /> 复制为新分支
+                  </button>
                 </section>
               )}
             </div>

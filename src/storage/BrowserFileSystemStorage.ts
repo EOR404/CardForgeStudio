@@ -1,4 +1,5 @@
 import { prettyJson, sanitizeProjectForExport, toV2Character, toV3Character, toWorldBookJson } from "../core/exporter/character";
+import { buildAssetReferenceManifest, serializeAssetForExternalFile } from "../core/project/assetFiles";
 import { normalizeImportedProject } from "../core/project/normalize";
 import type { Asset, CardProject, FrontendCardPackage, VersionSnapshot } from "../core/schema/types";
 import { safeFileName } from "../utils/file";
@@ -53,6 +54,7 @@ export function buildProjectDirectoryEntries(project: CardProject): ProjectDirec
     entry("tests/failure-cases.json", sanitized.tests.filter((session) => session.status === "failed")),
     entry("versions/snapshots.json", sanitized.versions),
     entry("exports/history.json", sanitized.exports),
+    entry("assets/references.json", buildAssetReferenceManifest(sanitized.assets)),
     entry("regex/rules.json", sanitized.advanced.regexRules),
     entry("variables/state.json", sanitized.advanced.variableSystem),
     entry("scripts/scripts.json", sanitized.advanced.scripts),
@@ -124,13 +126,7 @@ async function writeEntry(root: DirectoryHandle, item: ProjectDirectoryEntry) {
 function addAssetEntries(entries: ProjectDirectoryEntry[], asset: Asset) {
   const base = asset.type === "image" ? "assets/images" : `assets/${asset.type}s`;
   const name = safeFileName(asset.name || asset.id);
-  entries.push(
-    entry(`${base}/${name}.asset.json`, {
-      ...asset,
-      dataUrl: asset.dataUrl ? "__see_adjacent_file__" : undefined,
-      thumbnailUrl: asset.thumbnailUrl ? "__see_adjacent_file__" : undefined
-    })
-  );
+  entries.push(entry(`${base}/${name}.asset.json`, serializeAssetForExternalFile(asset)));
   if (asset.dataUrl) {
     const parsed = dataUrlToBytes(asset.dataUrl);
     entries.push({ path: `${base}/${assetBinaryName(asset.name || asset.id, extensionFromMime(asset.mimeType ?? parsed.mimeType))}`, bytes: parsed.bytes });
@@ -159,15 +155,15 @@ function addFrontendEntries(entries: ProjectDirectoryEntry[], frontendPackage: F
       (frontendPackage.assetIds ?? []).map((assetId) => assets.find((asset) => asset.id === assetId) ?? { id: assetId, missing: true })
     )
   );
+  entries.push(
+    entry(
+      `${base}/assets/references.json`,
+      buildAssetReferenceManifest(assets.filter((asset) => (frontendPackage.assetIds ?? []).includes(asset.id)))
+    )
+  );
   for (const asset of assets.filter((item) => (frontendPackage.assetIds ?? []).includes(item.id))) {
     const name = safeFileName(asset.name || asset.id);
-    entries.push(
-      entry(`${base}/assets/${name}.asset.json`, {
-        ...asset,
-        dataUrl: asset.dataUrl ? "__see_adjacent_file__" : undefined,
-        thumbnailUrl: asset.thumbnailUrl ? "__see_adjacent_file__" : undefined
-      })
-    );
+    entries.push(entry(`${base}/assets/${name}.asset.json`, serializeAssetForExternalFile(asset)));
     if (asset.dataUrl) {
       const parsed = dataUrlToBytes(asset.dataUrl);
       entries.push({ path: `${base}/assets/${assetBinaryName(asset.name || asset.id, extensionFromMime(asset.mimeType ?? parsed.mimeType))}`, bytes: parsed.bytes });

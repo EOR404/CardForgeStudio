@@ -13,6 +13,7 @@ export type SearchTarget = {
   page: AppPage;
   selectedCharacterId?: string;
   selectedWorldBookId?: string;
+  selectedWorldBookEntryId?: string;
   selectedAssetId?: string;
   selectedProviderId?: string;
 };

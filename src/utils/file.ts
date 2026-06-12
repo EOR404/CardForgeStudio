@@ -51,6 +51,38 @@ export function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+export async function createImageThumbnail(dataUrl: string, maxSize = 320): Promise<string> {
+  if (!dataUrl.startsWith("data:image/")) return dataUrl;
+  if (typeof document === "undefined" || typeof Image === "undefined") return dataUrl;
+  try {
+    const image = await loadImage(dataUrl);
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    if (!sourceWidth || !sourceHeight) return dataUrl;
+    const scale = Math.min(1, maxSize / Math.max(sourceWidth, sourceHeight));
+    const width = Math.max(1, Math.round(sourceWidth * scale));
+    const height = Math.max(1, Math.round(sourceHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) return dataUrl;
+    context.drawImage(image, 0, 0, width, height);
+    return canvas.toDataURL("image/webp", 0.82);
+  } catch {
+    return dataUrl;
+  }
+}
+
 export function safeFileName(name: string): string {
   return name.trim().replace(/[\\/:*?"<>|]+/g, "_") || "cardforge";
+}
+
+function loadImage(dataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("图片缩略图生成失败。"));
+    image.src = dataUrl;
+  });
 }

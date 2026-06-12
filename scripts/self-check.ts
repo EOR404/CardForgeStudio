@@ -60,6 +60,7 @@ import {
 } from "../src/core/security/trust";
 import { getCurrentProject, useAppStore } from "../src/stores/useAppStore";
 import { BrowserStorage } from "../src/storage/BrowserStorage";
+import { createImageThumbnail } from "../src/utils/file";
 import type { Asset, TestSession } from "../src/core/schema/types";
 
 const character = createCharacterDraft("莉娅");
@@ -191,6 +192,29 @@ assert.equal(getCurrentProject(useAppStore.getState())!.assets.length, 2);
 assert.equal(useAppStore.getState().activePage, "export");
 assert.equal(useAppStore.getState().selectedAssetId, copiedGlobalAssetId);
 assert.ok(getCurrentProject(useAppStore.getState())!.assets.some((asset) => asset.tags.includes("全局导入")));
+const referenceProjectId = useAppStore.getState().currentProjectId!;
+useAppStore.getState().addAsset({
+  name: "外部引用.png",
+  type: "image",
+  purpose: "reference",
+  source: "reference",
+  mimeType: "image/png",
+  path: "https://assets.example.test/external.png",
+  thumbnailUrl: "https://assets.example.test/external.png",
+  tags: ["外部引用", "参考图", "png"],
+  linkedCharacterIds: [],
+  linkedWorldBookIds: [],
+  notes: "仅引用外部路径：https://assets.example.test/external.png"
+});
+const externalReferenceAsset = getCurrentProject(useAppStore.getState())!.assets.at(-1)!;
+assert.equal(externalReferenceAsset.source, "reference");
+assert.equal(externalReferenceAsset.path, "https://assets.example.test/external.png");
+assert.equal(externalReferenceAsset.dataUrl, undefined);
+assert.ok(
+  BrowserStorage.load()
+    .projects.find((project) => project.id === referenceProjectId)
+    ?.assets.some((asset) => asset.name === "外部引用.png" && asset.source === "reference" && asset.path?.startsWith("https://"))
+);
 useAppStore.getState().deleteGlobalAsset(useAppStore.getState().globalAssets[0].id);
 assert.equal(useAppStore.getState().globalAssets.length, 0);
 const sourceProjectIdForAssetCopy = useAppStore.getState().currentProjectId!;
@@ -202,6 +226,58 @@ const targetProjectForAssetCopy = useAppStore.getState().projects.find((project)
 assert.ok(targetProjectForAssetCopy.assets.some((asset) => asset.name === "项目头像.png" && asset.tags.includes("跨项目复制")));
 assert.equal(targetProjectForAssetCopy.assets.find((asset) => asset.name === "项目头像.png")?.linkedCharacterIds.length, 0);
 useAppStore.getState().openProject(sourceProjectIdForAssetCopy);
+useAppStore.getState().addAsset({
+  name: "移动到全局库素材.png",
+  type: "image",
+  purpose: "avatar",
+  source: "upload",
+  mimeType: "image/png",
+  dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+  thumbnailUrl: "data:image/png;base64,iVBORw0KGgo=",
+  tags: ["移动"],
+  linkedCharacterIds: [undoCharacterId],
+  linkedWorldBookIds: []
+});
+const movableAsset = getCurrentProject(useAppStore.getState())!.assets.at(-1)!;
+useAppStore.getState().setCharacterAvatar(undoCharacterId, movableAsset.id);
+const projectBeforeMoveToGlobal = getCurrentProject(useAppStore.getState())!;
+useAppStore.getState().updateProject({
+  advanced: {
+    ...projectBeforeMoveToGlobal.advanced,
+    frontendPackages: [
+      createFrontendPackageDraft({ name: "移动资源绑定前端卡", assetIds: [movableAsset.id] }),
+      ...projectBeforeMoveToGlobal.advanced.frontendPackages
+    ]
+  }
+});
+const movedGlobalAssetId = useAppStore.getState().moveAssetToGlobalLibrary(movableAsset.id);
+assert.ok(movedGlobalAssetId);
+const afterMoveToGlobal = getCurrentProject(useAppStore.getState())!;
+assert.ok(!afterMoveToGlobal.assets.some((asset) => asset.id === movableAsset.id));
+assert.ok(useAppStore.getState().globalAssets.some((asset) => asset.id === movedGlobalAssetId && asset.name === "移动到全局库素材.png"));
+assert.equal(afterMoveToGlobal.characters.find((character) => character.id === undoCharacterId)?.avatarAssetId, undefined);
+assert.ok(afterMoveToGlobal.advanced.frontendPackages.every((frontendPackage) => !frontendPackage.assetIds.includes(movableAsset.id)));
+useAppStore.getState().createCharacterSnapshot(undoCharacterId, "角色分支基线");
+const characterBranchSnapshot = getCurrentProject(useAppStore.getState())!.versions.find(
+  (snapshot) => snapshot.targetType === "character" && snapshot.targetId === undoCharacterId
+)!;
+useAppStore.getState().updateCharacter(undoCharacterId, { name: "分支后的当前角色名" });
+const branchedCharacterId = useAppStore.getState().copyCharacterSnapshotToNewCharacter(characterBranchSnapshot.id);
+assert.ok(branchedCharacterId);
+const branchedCharacter = getCurrentProject(useAppStore.getState())!.characters.find((character) => character.id === branchedCharacterId)!;
+assert.equal(branchedCharacter.name, "撤销重做后的角色名 分支");
+assert.notEqual(branchedCharacter.id, undoCharacterId);
+const branchWorldBookId = getCurrentProject(useAppStore.getState())!.worldBooks[0].id;
+useAppStore.getState().createWorldBookSnapshot(branchWorldBookId, "世界书分支基线");
+const worldBookBranchSnapshot = getCurrentProject(useAppStore.getState())!.versions.find(
+  (snapshot) => snapshot.targetType === "worldbook" && snapshot.targetId === branchWorldBookId
+)!;
+useAppStore.getState().updateWorldBook(branchWorldBookId, { name: "分支后的当前世界书名" });
+const branchedWorldBookId = useAppStore.getState().copyWorldBookSnapshotToNewWorldBook(worldBookBranchSnapshot.id);
+assert.ok(branchedWorldBookId);
+const branchedWorldBook = getCurrentProject(useAppStore.getState())!.worldBooks.find((book) => book.id === branchedWorldBookId)!;
+assert.equal(branchedWorldBook.name, "示例世界书 分支");
+assert.notEqual(branchedWorldBook.id, branchWorldBookId);
 useAppStore.getState().addRegexRule();
 const advancedSnapshotProject = getCurrentProject(useAppStore.getState())!;
 const advancedRegexRule = advancedSnapshotProject.advanced.regexRules.at(-1)!;
@@ -295,6 +371,7 @@ assert.equal(JSON.parse(convertedEmbeddedWorldBook.outputText).entries.length, 2
 assert.equal(convertedEmbeddedWorldBook.kind, "worldbook");
 const onePixelPng =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+assert.equal(await createImageThumbnail(onePixelPng), onePixelPng);
 const pngWithMetadata = await embedV2MetadataInPngDataUrl(onePixelPng, character, worldBook);
 const importedPng = extractCharacterFromPngDataUrl(pngWithMetadata, "lia.v2.png");
 assert.equal(importedPng.character.name, "莉娅");
@@ -313,6 +390,10 @@ const importedCompressedPng = extractCharacterFromPngDataUrl(pngWithCompressedMe
 assert.equal(importedCompressedPng.character.name, "莉娅");
 assert.equal(importedCompressedPng.embeddedWorldBook?.entries.length, 2);
 assert.ok(importedCompressedPng.report.notes.some((note) => note.includes("zTXt")));
+await assert.rejects(
+  () => embedV2MetadataInPngDataUrl("data:image/jpeg;base64,AAAA", character, worldBook),
+  /不是 PNG/
+);
 useAppStore.setState({ projects: [], currentProjectId: undefined, activePage: "projects" });
 useAppStore.getState().createProject("导入保护自检", "advanced");
 const importBackupInitial = getCurrentProject(useAppStore.getState())!;
@@ -728,6 +809,11 @@ const promptBuild = buildTestPrompt(character, worldBook, [{ role: "assistant", 
 assert.ok(promptBuild.prompt.includes("World Info:"));
 assert.ok(promptBuild.promptSections.some((section) => section.source === "worldbook" && section.enabled && section.tokens > 0));
 assert.ok(promptBuild.promptSections.some((section) => section.target?.page === "worldbooks"));
+assert.ok(
+  promptBuild.promptSections.some(
+    (section) => section.source === "worldbook" && section.enabled && section.target?.selectedWorldBookEntryId === section.sourceId
+  )
+);
 const promptVariableSystem = {
   id: "vars_prompt_self_check",
   name: "Prompt Vars",
@@ -1121,6 +1207,22 @@ const coverAsset: Asset = {
   createdAt: Date.now(),
   updatedAt: Date.now()
 };
+const packageReferenceAsset: Asset = {
+  id: "asset_self_check_reference",
+  name: "remote-reference.png",
+  type: "image",
+  purpose: "reference",
+  source: "reference",
+  mimeType: "image/png",
+  path: "https://assets.example.test/reference.png",
+  thumbnailUrl: "https://assets.example.test/reference.png",
+  tags: ["外部引用", "参考图"],
+  linkedCharacterIds: [character.id],
+  linkedWorldBookIds: [],
+  notes: "path-only reference asset",
+  createdAt: Date.now(),
+  updatedAt: Date.now()
+};
 const charxCharacter = { ...character, avatarAssetId: coverAsset.id };
 const charxPackage = exportCharacterCharx({ character: charxCharacter, worldBook, assets: [coverAsset] });
 const charxFiles = unzipSync(charxPackage);
@@ -1346,7 +1448,7 @@ const packagedFrontend = createFrontendPackageDraft({
   html: "<main><img src=\"assets/lia-cover.png\" alt=\"cover\"><button>确认</button></main>",
   css: "img{max-width:100%}",
   js: "",
-  assetIds: [coverAsset.id],
+  assetIds: [coverAsset.id, packageReferenceAsset.id],
   manifest: { permissions: ["ui.render"], entry: "index.html" }
 });
 
@@ -1358,7 +1460,7 @@ const packaged = exportProjectPackage({
   compatibilityTarget: "sillytavern_regex",
   characters: [character],
   worldBooks: [worldBook],
-  assets: [coverAsset],
+  assets: [coverAsset, packageReferenceAsset],
   aiProviders: [provider],
   aiPresets: [],
   aiLogs: [aiLog],
@@ -1379,11 +1481,25 @@ const packaged = exportProjectPackage({
 });
 const packagedFiles = unzipSync(packaged);
 assert.ok(packagedFiles["logs/ai-calls.json"]);
+assert.ok(packagedFiles["assets/references.json"]);
 assert.ok(Object.keys(packagedFiles).some((path) => path.startsWith("versions/characters/")));
 assert.ok(Object.keys(packagedFiles).some((path) => path.startsWith("versions/worldbooks/")));
 assert.ok(Object.keys(packagedFiles).some((path) => path.startsWith("versions/project-snapshots/")));
 assert.ok(Object.keys(packagedFiles).some((path) => path.endsWith("/assets/assets.json") && path.startsWith("frontend/")));
+assert.ok(Object.keys(packagedFiles).some((path) => path.endsWith("/assets/references.json") && path.startsWith("frontend/")));
 assert.ok(Object.keys(packagedFiles).some((path) => path.endsWith("/assets/lia-cover.png")));
+const packagedAssetReferences = JSON.parse(new TextDecoder().decode(packagedFiles["assets/references.json"])) as Asset[];
+assert.ok(
+  packagedAssetReferences.some(
+    (asset) => asset.id === packageReferenceAsset.id && asset.path === packageReferenceAsset.path && asset.thumbnailUrl === packageReferenceAsset.thumbnailUrl
+  )
+);
+const packagedReferenceAssetMetadata = JSON.parse(
+  new TextDecoder().decode(packagedFiles["assets/images/remote-reference.png.asset.json"])
+) as Asset;
+assert.equal(packagedReferenceAssetMetadata.path, packageReferenceAsset.path);
+assert.equal(packagedReferenceAssetMetadata.thumbnailUrl, packageReferenceAsset.thumbnailUrl);
+assert.equal(packagedReferenceAssetMetadata.dataUrl, undefined);
 const packagedProjectJson = new TextDecoder().decode(packagedFiles["project.json"]);
 const packagedProjectData = JSON.parse(packagedProjectJson) as { mode?: string; trustLevel?: string; compatibilityTarget?: string };
 assert.equal(packagedProjectData.mode, "light");
@@ -1406,6 +1522,7 @@ assert.equal(unpacked.aiProviders[0].headers?.Authorization, "");
 assert.equal(unpacked.aiProviders[0].headers?.["X-API-Key"], "");
 assert.equal(unpacked.aiLogs.length, 1);
 assert.equal(unpacked.assets[0].purpose, "export-cover");
+assert.ok(unpacked.assets.some((asset) => asset.id === packageReferenceAsset.id && asset.source === "reference"));
 assert.equal(unpacked.characters.length, 1);
 assert.equal(unpacked.tests[0].status, "failed");
 assert.equal(unpacked.testCases?.[0].name, "月草召回回归");
@@ -1560,11 +1677,21 @@ assert.ok(folderEntries.some((entry) => entry.path === "tests/test-cases.json"))
 assert.ok(folderEntries.some((entry) => entry.path === "tests/failure-cases.json"));
 assert.ok(folderEntries.some((entry) => entry.path.startsWith("tests/failure-cases/")));
 assert.ok(folderEntries.some((entry) => entry.path === "logs/ai-calls.json"));
+assert.ok(folderEntries.some((entry) => entry.path === "assets/references.json"));
 assert.ok(folderEntries.some((entry) => entry.path.startsWith("versions/characters/")));
 assert.ok(folderEntries.some((entry) => entry.path.startsWith("versions/worldbooks/")));
 assert.ok(folderEntries.some((entry) => entry.path.startsWith("versions/project-snapshots/")));
 assert.ok(folderEntries.some((entry) => entry.path.endsWith("/assets/assets.json") && entry.path.startsWith("frontend/")));
+assert.ok(folderEntries.some((entry) => entry.path.endsWith("/assets/references.json") && entry.path.startsWith("frontend/")));
 assert.ok(folderEntries.some((entry) => entry.path.endsWith("/assets/lia-cover.png")));
+const folderReferenceManifest = JSON.parse(
+  new TextDecoder().decode(folderEntries.find((entry) => entry.path === "assets/references.json")!.bytes)
+) as Asset[];
+assert.ok(
+  folderReferenceManifest.some(
+    (asset) => asset.id === packageReferenceAsset.id && asset.path === packageReferenceAsset.path && asset.thumbnailUrl === packageReferenceAsset.thumbnailUrl
+  )
+);
 const folderProjectJson = new TextDecoder().decode(folderEntries.find((entry) => entry.path === "project.json")!.bytes);
 assert.ok(!folderProjectJson.includes("sk-self-check-secret"));
 assert.ok(!folderProjectJson.includes("sk-header-secret"));

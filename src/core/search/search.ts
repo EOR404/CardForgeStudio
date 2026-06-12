@@ -157,7 +157,7 @@ function buildSearchDocuments(project: CardProject): SearchDocument[] {
           field("条件", entry.conditions, 3),
           field("扩展", entry.extensions, 2)
         ],
-        target: pageTarget("worldbooks", { selectedWorldBookId: worldBook.id }),
+        target: pageTarget("worldbooks", { selectedWorldBookId: worldBook.id, selectedWorldBookEntryId: entry.id }),
         updatedAt: worldBook.updatedAt
       });
     }

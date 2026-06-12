@@ -59,6 +59,7 @@ type HistorySnapshot = {
   activePage: AppPage;
   selectedCharacterId?: string;
   selectedWorldBookId?: string;
+  selectedWorldBookEntryId?: string;
   selectedAssetId?: string;
   selectedProviderId?: string;
 };
@@ -70,6 +71,7 @@ type AppState = {
   activePage: AppPage;
   selectedCharacterId?: string;
   selectedWorldBookId?: string;
+  selectedWorldBookEntryId?: string;
   selectedAssetId?: string;
   selectedProviderId?: string;
   pendingAIResult?: PendingAIResult;
@@ -101,6 +103,7 @@ type AppState = {
   updateAsset: (id: string, patch: Partial<Asset>) => void;
   deleteAsset: (id: string) => void;
   copyAssetToGlobalLibrary: (assetId: string) => void;
+  moveAssetToGlobalLibrary: (assetId: string) => string | undefined;
   copyGlobalAssetToProject: (assetId: string, options?: { stayOnPage?: boolean }) => string | undefined;
   copyAssetToProject: (assetId: string, targetProjectId: string) => void;
   deleteGlobalAsset: (assetId: string) => void;
@@ -118,8 +121,10 @@ type AppState = {
   deleteTestCase: (testCaseId: string) => void;
   createCharacterSnapshot: (characterId: string, notes?: string) => void;
   restoreCharacterSnapshot: (snapshotId: string) => void;
+  copyCharacterSnapshotToNewCharacter: (snapshotId: string) => string | undefined;
   createWorldBookSnapshot: (worldBookId: string, notes?: string) => void;
   restoreWorldBookSnapshot: (snapshotId: string) => void;
+  copyWorldBookSnapshotToNewWorldBook: (snapshotId: string) => string | undefined;
   createProjectSnapshot: (notes?: string) => void;
   restoreProjectSnapshot: (snapshotId: string) => void;
   createAdvancedSnapshot: (target: AdvancedSnapshotTarget, notes?: string) => void;
@@ -137,6 +142,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activePage: initial.currentProjectId ? "dashboard" : "projects",
   selectedCharacterId: initial.projects.find((project) => project.id === initial.currentProjectId)?.characters[0]?.id,
   selectedWorldBookId: initial.projects.find((project) => project.id === initial.currentProjectId)?.worldBooks[0]?.id,
+  selectedWorldBookEntryId: initial.projects.find((project) => project.id === initial.currentProjectId)?.worldBooks[0]?.entries[0]?.id,
   selectedProviderId: initial.projects.find((project) => project.id === initial.currentProjectId)?.aiProviders[0]?.id,
   undoStack: [],
   redoStack: [],
@@ -148,6 +154,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activePage: "dashboard",
       selectedCharacterId: project.characters[0]?.id,
       selectedWorldBookId: project.worldBooks[0]?.id,
+      selectedWorldBookEntryId: project.worldBooks[0]?.entries[0]?.id,
       selectedProviderId: project.aiProviders[0]?.id
     });
   },
@@ -159,6 +166,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activePage: "dashboard",
       selectedCharacterId: nextProject.characters[0]?.id,
       selectedWorldBookId: nextProject.worldBooks[0]?.id,
+      selectedWorldBookEntryId: nextProject.worldBooks[0]?.entries[0]?.id,
       selectedProviderId: nextProject.aiProviders[0]?.id
     });
   },
@@ -169,6 +177,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activePage: "dashboard",
       selectedCharacterId: project?.characters[0]?.id,
       selectedWorldBookId: project?.worldBooks[0]?.id,
+      selectedWorldBookEntryId: project?.worldBooks[0]?.entries[0]?.id,
       selectedProviderId: project?.aiProviders[0]?.id
     });
   },
@@ -182,6 +191,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activePage: "dashboard",
       selectedCharacterId: project.characters[0]?.id,
       selectedWorldBookId: project.worldBooks[0]?.id,
+      selectedWorldBookEntryId: project.worldBooks[0]?.entries[0]?.id,
       selectedProviderId: project.aiProviders[0]?.id
     });
   },
@@ -259,13 +269,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       selectedCharacterId: result.character.id,
       selectedWorldBookId: result.embeddedWorldBook?.id ?? get().selectedWorldBookId,
+      selectedWorldBookEntryId: result.embeddedWorldBook?.entries[0]?.id ?? get().selectedWorldBookEntryId,
       activePage: "characters"
     });
   },
   addWorldBook() {
     const worldBook = createWorldBookDraft();
     updateCurrentProject(set, get, (project) => ({ ...project, worldBooks: [...project.worldBooks, worldBook] }));
-    set({ selectedWorldBookId: worldBook.id, activePage: "worldbooks" });
+    set({ selectedWorldBookId: worldBook.id, selectedWorldBookEntryId: worldBook.entries[0]?.id, activePage: "worldbooks" });
   },
   updateWorldBook(id, patch) {
     updateCurrentProject(set, get, (project) => ({
@@ -284,7 +295,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         linkedWorldBooks: character.linkedWorldBooks.filter((worldBookId) => worldBookId !== id)
       }))
     }));
-    set({ selectedWorldBookId: getCurrentProject(get())?.worldBooks.find((book) => book.id !== id)?.id });
+    const nextBook = getCurrentProject(get())?.worldBooks.find((book) => book.id !== id);
+    set({ selectedWorldBookId: nextBook?.id, selectedWorldBookEntryId: nextBook?.entries[0]?.id });
   },
   importWorldBook(data, fileName) {
     const worldBook = importWorldBookJson(data, fileName || "导入世界书");
@@ -300,11 +312,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...project.versions
       ]
     }));
-    set({ selectedWorldBookId: worldBook.id, activePage: "worldbooks" });
+    set({ selectedWorldBookId: worldBook.id, selectedWorldBookEntryId: worldBook.entries[0]?.id, activePage: "worldbooks" });
   },
   addWorldBookEntry(worldBookId) {
     const entry = createWorldBookEntryDraft();
     updateWorldBookEntries(set, get, worldBookId, (entries) => [...entries, entry]);
+    set({ selectedWorldBookId: worldBookId, selectedWorldBookEntryId: entry.id, activePage: "worldbooks" });
   },
   updateWorldBookEntry(worldBookId, entryId, patch) {
     updateWorldBookEntries(set, get, worldBookId, (entries) =>
@@ -313,6 +326,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   deleteWorldBookEntry(worldBookId, entryId) {
     updateWorldBookEntries(set, get, worldBookId, (entries) => entries.filter((entry) => entry.id !== entryId));
+    const nextBook = getCurrentProject(get())?.worldBooks.find((book) => book.id === worldBookId);
+    if (get().selectedWorldBookEntryId === entryId || !nextBook?.entries.some((entry) => entry.id === get().selectedWorldBookEntryId)) {
+      set({ selectedWorldBookEntryId: nextBook?.entries[0]?.id });
+    }
   },
   addAsset(asset) {
     const nextAsset: Asset = {
@@ -333,13 +350,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
   deleteAsset(id) {
-    updateCurrentProject(set, get, (project) => ({
-      ...project,
-      assets: project.assets.filter((asset) => asset.id !== id),
-      characters: project.characters.map((character) =>
-        character.avatarAssetId === id ? { ...character, avatarAssetId: undefined } : character
-      )
-    }));
+    updateCurrentProject(set, get, (project) => removeAssetFromProject(project, id));
+    if (get().selectedAssetId === id) {
+      set({ selectedAssetId: getCurrentProject(get())?.assets[0]?.id });
+    }
   },
   copyAssetToGlobalLibrary(assetId) {
     const project = getCurrentProject(get());
@@ -349,6 +363,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     const globalAssets = [globalAsset, ...get().globalAssets];
     set({ globalAssets });
     BrowserStorage.save(get().projects, get().currentProjectId, globalAssets);
+  },
+  moveAssetToGlobalLibrary(assetId) {
+    const project = getCurrentProject(get());
+    const asset = project?.assets.find((item) => item.id === assetId);
+    if (!project || !asset) return undefined;
+    const globalAsset = cloneAssetForLibrary(asset, "global", project.name);
+    const updatedProject = removeAssetFromProject(project, assetId);
+    const projects = get().projects.map((item) => (item.id === project.id ? updatedProject : item));
+    const globalAssets = [globalAsset, ...get().globalAssets];
+    const nextSelectedAssetId = get().selectedAssetId === assetId ? updatedProject.assets[0]?.id : get().selectedAssetId;
+    commit(set, get, { projects, globalAssets });
+    set({ selectedAssetId: nextSelectedAssetId });
+    return globalAsset.id;
   },
   copyGlobalAssetToProject(assetId, options) {
     const asset = get().globalAssets.find((item) => item.id === assetId);
@@ -524,6 +551,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       )
     }));
   },
+  copyCharacterSnapshotToNewCharacter(snapshotId) {
+    const project = getCurrentProject(get());
+    const snapshot = project?.versions.find((item) => item.id === snapshotId && item.targetType === "character");
+    if (!snapshot) return undefined;
+    const time = now();
+    const character = {
+      ...structuredClone(snapshot.data as InternalCharacter),
+      id: uid("char"),
+      name: `${(snapshot.data as InternalCharacter).name || "未命名角色"} 分支`,
+      createdAt: time,
+      updatedAt: time
+    };
+    updateCurrentProject(set, get, (current) => ({ ...current, characters: [...current.characters, character] }));
+    set({ selectedCharacterId: character.id, activePage: "characters" });
+    return character.id;
+  },
   createWorldBookSnapshot(worldBookId, notes) {
     const worldBook = getCurrentProject(get())?.worldBooks.find((item) => item.id === worldBookId);
     if (!worldBook) return;
@@ -554,7 +597,23 @@ export const useAppStore = create<AppState>((set, get) => ({
         current.id === snapshot.targetId ? { ...worldBook, updatedAt: now() } : current
       )
     }));
-    set({ selectedWorldBookId: snapshot.targetId });
+    set({ selectedWorldBookId: snapshot.targetId, selectedWorldBookEntryId: worldBook.entries[0]?.id });
+  },
+  copyWorldBookSnapshotToNewWorldBook(snapshotId) {
+    const project = getCurrentProject(get());
+    const snapshot = project?.versions.find((item) => item.id === snapshotId && item.targetType === "worldbook");
+    if (!snapshot) return undefined;
+    const time = now();
+    const worldBook = {
+      ...structuredClone(snapshot.data as InternalWorldBook),
+      id: uid("worldbook"),
+      name: `${(snapshot.data as InternalWorldBook).name || "未命名世界书"} 分支`,
+      createdAt: time,
+      updatedAt: time
+    };
+    updateCurrentProject(set, get, (current) => ({ ...current, worldBooks: [...current.worldBooks, worldBook] }));
+    set({ selectedWorldBookId: worldBook.id, selectedWorldBookEntryId: worldBook.entries[0]?.id, activePage: "worldbooks" });
+    return worldBook.id;
   },
   createProjectSnapshot(notes) {
     const project = getCurrentProject(get());
@@ -587,6 +646,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       projects,
       selectedCharacterId: updated.characters[0]?.id,
       selectedWorldBookId: updated.worldBooks[0]?.id,
+      selectedWorldBookEntryId: updated.worldBooks[0]?.entries[0]?.id,
       selectedProviderId: updated.aiProviders[0]?.id,
       activePage: "dashboard"
     });
@@ -855,6 +915,24 @@ function cloneAssetForLibrary(asset: Asset, target: "global" | "project" | "othe
   };
 }
 
+function removeAssetFromProject(project: CardProject, assetId: string): CardProject {
+  return {
+    ...project,
+    assets: project.assets.filter((asset) => asset.id !== assetId),
+    characters: project.characters.map((character) =>
+      character.avatarAssetId === assetId ? { ...character, avatarAssetId: undefined, updatedAt: now() } : character
+    ),
+    advanced: {
+      ...project.advanced,
+      frontendPackages: project.advanced.frontendPackages.map((frontendPackage) => ({
+        ...frontendPackage,
+        assetIds: frontendPackage.assetIds.filter((id) => id !== assetId),
+        updatedAt: frontendPackage.assetIds.includes(assetId) ? now() : frontendPackage.updatedAt
+      }))
+    }
+  };
+}
+
 function commit(
   set: (partial: Partial<AppState>) => void,
   get: () => AppState,
@@ -898,6 +976,7 @@ function createHistorySnapshot(state: AppState): HistorySnapshot {
     activePage: state.activePage,
     selectedCharacterId: state.selectedCharacterId,
     selectedWorldBookId: state.selectedWorldBookId,
+    selectedWorldBookEntryId: state.selectedWorldBookEntryId,
     selectedAssetId: state.selectedAssetId,
     selectedProviderId: state.selectedProviderId
   };

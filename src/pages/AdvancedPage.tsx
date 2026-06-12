@@ -1015,7 +1015,13 @@ function FrontendSandbox() {
           <div className="form-row">
             <label>
               世界书预览
-              <select value={worldBook?.id ?? ""} onChange={(event) => useAppStore.setState({ selectedWorldBookId: event.target.value })}>
+              <select
+                value={worldBook?.id ?? ""}
+                onChange={(event) => {
+                  const nextWorldBook = project.worldBooks.find((item) => item.id === event.target.value);
+                  useAppStore.setState({ selectedWorldBookId: event.target.value, selectedWorldBookEntryId: nextWorldBook?.entries[0]?.id });
+                }}
+              >
                 <option value="">未选择世界书</option>
                 {project.worldBooks.map((item) => (
                   <option key={item.id} value={item.id}>

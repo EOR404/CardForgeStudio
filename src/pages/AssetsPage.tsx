@@ -6,7 +6,7 @@ import { resolveAIForTask } from "../core/ai/presets";
 import type { GeneratedImage } from "../core/ai/image";
 import type { Asset } from "../core/schema/types";
 import { getCurrentProject, useAppStore } from "../stores/useAppStore";
-import { readFileAsDataUrl } from "../utils/file";
+import { createImageThumbnail, readFileAsDataUrl } from "../utils/file";
 
 const ASSET_PURPOSES: Array<{ value: NonNullable<Asset["purpose"]>; label: string }> = [
   { value: "avatar", label: "头像" },
@@ -19,6 +19,16 @@ const ASSET_PURPOSES: Array<{ value: NonNullable<Asset["purpose"]>; label: strin
   { value: "map", label: "地图" },
   { value: "icon", label: "图标" },
   { value: "reference", label: "参考图" },
+  { value: "other", label: "其他" }
+];
+
+const ASSET_TYPES: Array<{ value: Asset["type"]; label: string }> = [
+  { value: "image", label: "图片" },
+  { value: "text", label: "文本" },
+  { value: "json", label: "JSON" },
+  { value: "character_card", label: "角色卡" },
+  { value: "worldbook", label: "世界书" },
+  { value: "script", label: "脚本" },
   { value: "other", label: "其他" }
 ];
 
@@ -49,6 +59,10 @@ export function AssetsPage() {
   const [imageAnalysisRaw, setImageAnalysisRaw] = useState("");
   const [imageAnalysisAssetId, setImageAnalysisAssetId] = useState("");
   const [targetProjectId, setTargetProjectId] = useState("");
+  const [referenceName, setReferenceName] = useState("");
+  const [referencePath, setReferencePath] = useState("");
+  const [referenceType, setReferenceType] = useState<Asset["type"]>("image");
+  const [referencePurpose, setReferencePurpose] = useState<NonNullable<Asset["purpose"]>>("reference");
   if (!project) return null;
   const activeProject = project;
   const selectedAsset = activeProject.assets.find((asset) => asset.id === state.selectedAssetId) ?? activeProject.assets[0];
@@ -98,6 +112,7 @@ export function AssetsPage() {
       const dataUrl = await readFileAsDataUrl(file);
       const type = inferAssetType(file);
       const purpose = type === "image" ? inferImagePurpose(file.name) : "other";
+      const thumbnailUrl = type === "image" ? await createImageThumbnail(dataUrl) : undefined;
       state.addAsset({
         name: file.name,
         type,
@@ -105,12 +120,38 @@ export function AssetsPage() {
         source: "upload",
         mimeType: file.type,
         dataUrl,
-        thumbnailUrl: type === "image" ? dataUrl : undefined,
+        thumbnailUrl,
         tags: defaultTags(file, type, purpose),
         linkedCharacterIds: [],
         linkedWorldBookIds: []
       });
     }
+  }
+
+  function addReferenceAsset() {
+    const path = referencePath.trim();
+    if (!path) {
+      setImageStatus("请先填写外部路径或 URL。");
+      return;
+    }
+    const name = referenceName.trim() || inferReferenceName(path);
+    const purpose: NonNullable<Asset["purpose"]> = referenceType === "image" ? referencePurpose : "other";
+    state.addAsset({
+      name,
+      type: referenceType,
+      purpose,
+      source: "reference",
+      mimeType: inferReferenceMimeType(referenceType, path),
+      path,
+      thumbnailUrl: referenceType === "image" ? path : undefined,
+      tags: defaultReferenceTags(referenceType, purpose, path),
+      linkedCharacterIds: [],
+      linkedWorldBookIds: [],
+      notes: `仅引用外部路径：${path}`
+    });
+    setReferenceName("");
+    setReferencePath("");
+    setImageStatus(`已添加外部引用资源：${name}`);
   }
 
   function resolveTaskAI(taskType: string) {
@@ -177,10 +218,11 @@ export function AssetsPage() {
     }
   }
 
-  function saveGeneratedImage(image: GeneratedImage, index: number) {
+  async function saveGeneratedImage(image: GeneratedImage, index: number) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const hasImagePreview = Boolean(image.dataUrl || image.url);
     const name = `${selectedCharacter?.name || "cardforge"}-${imagePurpose}-${timestamp}-${index + 1}${hasImagePreview ? ".png" : ".comfyui-job.json"}`;
+    const thumbnailUrl = image.dataUrl ? await createImageThumbnail(image.dataUrl) : image.url;
     state.addAsset({
       name,
       type: hasImagePreview ? "image" : "json",
@@ -189,7 +231,7 @@ export function AssetsPage() {
       mimeType: hasImagePreview ? dataUrlMimeType(image.dataUrl) ?? "image/png" : "application/json",
       dataUrl: hasImagePreview ? image.dataUrl : jsonDataUrl(buildGeneratedImageRecord(image, positivePrompt, negativePrompt)),
       path: image.url,
-      thumbnailUrl: hasImagePreview ? image.dataUrl ?? image.url : undefined,
+      thumbnailUrl: hasImagePreview ? thumbnailUrl : undefined,
       tags: [
         "AI生成",
         ...(image.provider === "comfyui" ? ["ComfyUI", "任务记录"] : []),
@@ -275,6 +317,14 @@ export function AssetsPage() {
     if (!selectedAsset) return;
     state.copyAssetToGlobalLibrary(selectedAsset.id);
     setImageStatus(`已复制到全局资源库：${selectedAsset.name}`);
+  }
+
+  function moveSelectedToGlobalLibrary() {
+    if (!selectedAsset) return;
+    if (!window.confirm(`移动「${selectedAsset.name}」到全局资源库？当前项目内的资源和头像/前端绑定会被移除。`)) return;
+    const movedName = selectedAsset.name;
+    const globalAssetId = state.moveAssetToGlobalLibrary(selectedAsset.id);
+    setImageStatus(globalAssetId ? `已移动到全局资源库：${movedName}` : `移动到全局资源库失败：${movedName}`);
   }
 
   function copyGlobalAssetToProject(asset: Asset) {
@@ -370,7 +420,58 @@ export function AssetsPage() {
             </label>
           </div>
           <div className="callout" style={{ marginTop: 12 }}>
-            可直接拖拽图片、JSON、Markdown、脚本或前端文件到项目资源库。常用素材可复制到全局资源库，再复用到其他项目。
+            可直接拖拽图片、JSON、Markdown、脚本或前端文件到项目资源库；也可以仅记录外部路径或 URL。常用素材可复制到全局资源库，再复用到其他项目。
+          </div>
+          <div className="panel-title" style={{ marginTop: 16 }}>
+            <Link2 size={18} />
+            <span>外部路径引用</span>
+          </div>
+          <div className="form-grid">
+            <div className="form-row">
+              <label>
+                引用名称
+                <input value={referenceName} onChange={(event) => setReferenceName(event.target.value)} placeholder="留空时使用路径文件名" />
+              </label>
+              <label>
+                资源类型
+                <select value={referenceType} onChange={(event) => setReferenceType(event.target.value as Asset["type"])}>
+                  {ASSET_TYPES.map((type) => (
+                    <option key={type.value} value={type.value}>
+                      {type.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="form-row">
+              <label>
+                图片用途
+                <select
+                  value={referencePurpose}
+                  onChange={(event) => setReferencePurpose(event.target.value as NonNullable<Asset["purpose"]>)}
+                  disabled={referenceType !== "image"}
+                >
+                  {ASSET_PURPOSES.map((purpose) => (
+                    <option key={purpose.value} value={purpose.value}>
+                      {purpose.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                路径 / URL
+                <input
+                  value={referencePath}
+                  onChange={(event) => setReferencePath(event.target.value)}
+                  placeholder="https://example.com/card.png 或 D:/素材/card.png"
+                />
+              </label>
+            </div>
+            <div className="toolbar">
+              <button className="secondary-button" onClick={addReferenceAsset}>
+                <Link2 size={16} /> 添加路径引用
+              </button>
+            </div>
           </div>
           <div className="panel-title" style={{ marginTop: 16 }}>
             <Sparkles size={18} />
@@ -578,6 +679,9 @@ export function AssetsPage() {
                 <button className="secondary-button" onClick={copySelectedToGlobalLibrary}>
                   <Copy size={17} /> 复制到全局库
                 </button>
+                <button className="danger-button" onClick={moveSelectedToGlobalLibrary}>
+                  <Copy size={17} /> 移动到全局库
+                </button>
               </div>
               {otherProjects.length > 0 && (
                 <div className="form-row">
@@ -628,7 +732,13 @@ export function AssetsPage() {
                 </label>
                 <label>
                   关联世界书
-                  <select value={selectedWorldBook?.id ?? ""} onChange={(event) => useAppStore.setState({ selectedWorldBookId: event.target.value })}>
+                  <select
+                    value={selectedWorldBook?.id ?? ""}
+                    onChange={(event) => {
+                      const nextWorldBook = project.worldBooks.find((book) => book.id === event.target.value);
+                      useAppStore.setState({ selectedWorldBookId: event.target.value, selectedWorldBookEntryId: nextWorldBook?.entries[0]?.id });
+                    }}
+                  >
                     {project.worldBooks.map((book) => (
                       <option key={book.id} value={book.id}>
                         {book.name}
@@ -738,6 +848,37 @@ function defaultTags(file: File, type: Asset["type"], purpose?: Asset["purpose"]
   const extension = file.name.split(".").pop();
   if (extension) tags.add(extension.toLowerCase());
   return [...tags];
+}
+
+function defaultReferenceTags(type: Asset["type"], purpose: NonNullable<Asset["purpose"]>, path: string): string[] {
+  const tags = new Set<string>(["外部引用", type, purposeLabel(purpose)]);
+  const extension = inferReferenceExtension(path);
+  if (extension) tags.add(extension);
+  return [...tags];
+}
+
+function inferReferenceName(path: string): string {
+  const cleanedPath = path.trim().replace(/[?#].*$/, "");
+  const separatorIndex = Math.max(cleanedPath.lastIndexOf("/"), cleanedPath.lastIndexOf("\\"));
+  const fileName = cleanedPath.slice(separatorIndex + 1).trim();
+  return fileName || "外部引用资源";
+}
+
+function inferReferenceMimeType(type: Asset["type"], path: string): string | undefined {
+  const extension = inferReferenceExtension(path);
+  if (type === "image") {
+    if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+    if (extension === "svg") return "image/svg+xml";
+    return extension ? `image/${extension}` : "image/*";
+  }
+  if (type === "json" || type === "character_card" || type === "worldbook") return "application/json";
+  if (type === "script" || type === "text") return "text/plain";
+  return extension ? "application/octet-stream" : undefined;
+}
+
+function inferReferenceExtension(path: string): string | undefined {
+  const cleanedPath = path.trim().replace(/[?#].*$/, "");
+  return cleanedPath.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
 }
 
 function purposeLabel(purpose?: Asset["purpose"]): string {

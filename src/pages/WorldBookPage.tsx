@@ -1,4 +1,4 @@
-import { Bot, BookOpen, FileJson, Plus, Save, Trash2 } from "lucide-react";
+import { Bot, BookOpen, Copy, FileJson, Plus, Save, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { extractWorldBookEntriesWithAI } from "../core/ai/operations";
 import { maybeAIInvocationLog } from "../core/ai/logging";
@@ -23,7 +23,6 @@ import { downloadTextFile, readFileAsText, safeFileName } from "../utils/file";
 export function WorldBookPage() {
   const state = useAppStore();
   const project = getCurrentProject(state);
-  const [selectedEntryId, setSelectedEntryId] = useState<string | undefined>();
   const [testInput, setTestInput] = useState("我在雪地里寻找月草，请药师帮忙。");
   const [categoryFilter, setCategoryFilter] = useState<WorldBookEntryCategory | "all">("all");
   const [sourceText, setSourceText] = useState("雾城被灰雾包围，钟塔每日三次敲响净雾钟。失灯者会避开钟声。巡夜人不能在没有证据时伤害平民。");
@@ -37,7 +36,7 @@ export function WorldBookPage() {
   if (!project) return null;
   const activeProject = project;
   const worldBook = activeProject.worldBooks.find((book) => book.id === state.selectedWorldBookId) ?? activeProject.worldBooks[0];
-  const selectedEntry = worldBook?.entries.find((entry) => entry.id === selectedEntryId) ?? worldBook?.entries[0];
+  const selectedEntry = worldBook?.entries.find((entry) => entry.id === state.selectedWorldBookEntryId) ?? worldBook?.entries[0];
   const visibleEntries = worldBook?.entries.filter((entry) => categoryFilter === "all" || (entry.category ?? "other") === categoryFilter) ?? [];
   const categoryCounts = useMemo(() => summarizeCategories(worldBook?.entries ?? []), [worldBook?.entries]);
   const triggerAnalysis = useMemo(
@@ -139,7 +138,7 @@ export function WorldBookPage() {
           id: latest.id,
           category: entry.category ?? classifyWorldBookEntry(entry)
         });
-        setSelectedEntryId(latest.id);
+        useAppStore.setState({ selectedWorldBookEntryId: latest.id });
       }
     }
     setExtractedEntries([]);
@@ -185,7 +184,7 @@ export function WorldBookPage() {
               <button
                 key={book.id}
                 className={worldBook?.id === book.id ? "list-item active" : "list-item"}
-                onClick={() => useAppStore.setState({ selectedWorldBookId: book.id })}
+                onClick={() => useAppStore.setState({ selectedWorldBookId: book.id, selectedWorldBookEntryId: book.entries[0]?.id })}
               >
                 <strong>{book.name}</strong>
                 <span className="muted">{book.entries.length} 条目</span>
@@ -258,7 +257,7 @@ export function WorldBookPage() {
                     <button
                       key={entry.id}
                       className={selectedEntry?.id === entry.id ? "list-item active" : "list-item"}
-                      onClick={() => setSelectedEntryId(entry.id)}
+                      onClick={() => useAppStore.setState({ selectedWorldBookEntryId: entry.id })}
                     >
                       <strong>{entry.name || entry.comment || "未命名条目"}</strong>
                       <span className="muted">{categoryLabel(entry.category)}</span>
@@ -517,6 +516,9 @@ export function WorldBookPage() {
                     }
                   >
                     从快照恢复
+                  </button>
+                  <button className="secondary-button" onClick={() => state.copyWorldBookSnapshotToNewWorldBook(selectedSnapshot.id)}>
+                    <Copy size={16} /> 复制为新分支
                   </button>
                 </section>
               )}

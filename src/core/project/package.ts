@@ -1,6 +1,7 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { prettyJson, sanitizeProjectForExport, toV2Character, toV3Character, toWorldBookJson } from "../exporter/character";
 import type { Asset, CardProject, FrontendCardPackage, VersionSnapshot } from "../schema/types";
+import { buildAssetReferenceManifest, serializeAssetForExternalFile } from "./assetFiles";
 import { normalizeImportedProject } from "./normalize";
 
 const PACKAGE_VERSION = "cardforge-package-v1";
@@ -33,6 +34,7 @@ export function exportProjectPackage(project: CardProject): Uint8Array {
     "tests/failure-cases.json": jsonFile(sanitized.tests.filter((session) => session.status === "failed")),
     "versions/snapshots.json": jsonFile(sanitized.versions),
     "exports/history.json": jsonFile(sanitized.exports),
+    "assets/references.json": jsonFile(buildAssetReferenceManifest(sanitized.assets)),
     "regex/rules.json": jsonFile(sanitized.advanced.regexRules),
     "variables/state.json": jsonFile(sanitized.advanced.variableSystem),
     "scripts/scripts.json": jsonFile(sanitized.advanced.scripts),
@@ -88,11 +90,7 @@ export function importProjectPackage(bytes: Uint8Array): CardProject {
 
 function addAssetFiles(files: ZipTree, asset: Asset) {
   const base = asset.type === "image" ? "assets/images" : `assets/${asset.type}s`;
-  files[`${base}/${safeName(asset.name || asset.id)}.asset.json`] = jsonFile({
-    ...asset,
-    dataUrl: asset.dataUrl ? "__see_adjacent_file__" : undefined,
-    thumbnailUrl: asset.thumbnailUrl ? "__see_adjacent_file__" : undefined
-  });
+  files[`${base}/${safeName(asset.name || asset.id)}.asset.json`] = jsonFile(serializeAssetForExternalFile(asset));
   if (asset.dataUrl) {
     const parsed = dataUrlToBytes(asset.dataUrl);
     const extension = extensionFromMime(asset.mimeType ?? parsed.mimeType);
@@ -117,13 +115,12 @@ function addFrontendPackageFiles(files: ZipTree, frontendPackage: FrontendCardPa
   files[`${base}/assets/assets.json`] = jsonFile(
     (frontendPackage.assetIds ?? []).map((assetId) => assets.find((asset) => asset.id === assetId) ?? { id: assetId, missing: true })
   );
+  files[`${base}/assets/references.json`] = jsonFile(
+    buildAssetReferenceManifest(assets.filter((asset) => (frontendPackage.assetIds ?? []).includes(asset.id)))
+  );
   for (const asset of assets.filter((item) => (frontendPackage.assetIds ?? []).includes(item.id))) {
     const name = safeName(asset.name || asset.id);
-    files[`${base}/assets/${name}.asset.json`] = jsonFile({
-      ...asset,
-      dataUrl: asset.dataUrl ? "__see_adjacent_file__" : undefined,
-      thumbnailUrl: asset.thumbnailUrl ? "__see_adjacent_file__" : undefined
-    });
+    files[`${base}/assets/${name}.asset.json`] = jsonFile(serializeAssetForExternalFile(asset));
     if (asset.dataUrl) {
       const parsed = dataUrlToBytes(asset.dataUrl);
       files[`${base}/assets/${assetBinaryName(asset.name || asset.id, extensionFromMime(asset.mimeType ?? parsed.mimeType))}`] = parsed.bytes;

@@ -376,6 +376,7 @@ export function TestSandboxPage() {
       activePage: section.target.page,
       ...(section.target.selectedCharacterId ? { selectedCharacterId: section.target.selectedCharacterId } : {}),
       ...(section.target.selectedWorldBookId ? { selectedWorldBookId: section.target.selectedWorldBookId } : {}),
+      ...(section.target.selectedWorldBookEntryId ? { selectedWorldBookEntryId: section.target.selectedWorldBookEntryId } : {}),
       ...(section.target.selectedAssetId ? { selectedAssetId: section.target.selectedAssetId } : {}),
       ...(section.target.selectedProviderId ? { selectedProviderId: section.target.selectedProviderId } : {})
     });
@@ -396,7 +397,13 @@ export function TestSandboxPage() {
               </option>
             ))}
           </select>
-          <select value={worldBook?.id ?? ""} onChange={(event) => useAppStore.setState({ selectedWorldBookId: event.target.value })}>
+          <select
+            value={worldBook?.id ?? ""}
+            onChange={(event) => {
+              const nextWorldBook = activeProject.worldBooks.find((item) => item.id === event.target.value);
+              useAppStore.setState({ selectedWorldBookId: event.target.value, selectedWorldBookEntryId: nextWorldBook?.entries[0]?.id });
+            }}
+          >
             <option value="">不使用世界书</option>
             {activeProject.worldBooks.map((item) => (
               <option key={item.id} value={item.id}>
